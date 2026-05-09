@@ -6,14 +6,16 @@
 #   curl -fsSL https://getknack.ai/install | sh -s -- --version 0.2.0
 #   curl -fsSL https://getknack.ai/install | sh -s -- --bin-dir /custom/path
 #
-# Detects OS+arch, downloads the matching binary from GitHub Releases,
-# extracts it into ~/.local/bin (or $KNACK_BIN_DIR), and reminds you to add
-# that directory to PATH if it's not already there. Idempotent — re-running
-# upgrades the binary in place.
+# Detects OS+arch, downloads the matching binary from R2 (cli.getknack.ai
+# by default, overridable via KNACK_R2_BASE), extracts it into ~/.local/bin
+# (or $KNACK_BIN_DIR), and reminds you to add that directory to PATH if
+# it's not already there. Idempotent — re-running upgrades in place.
 
 set -eu
 
-REPO="${KNACK_REPO:-jordan-gibbs/knack}"
+# R2 base URL. Defaults to the cli.getknack.ai custom domain. Override via
+# KNACK_R2_BASE to use the raw r2.dev URL or a different host.
+R2_BASE="${KNACK_R2_BASE:-https://cli.getknack.ai}"
 VERSION="${KNACK_VERSION:-latest}"
 BIN_DIR="${KNACK_BIN_DIR:-$HOME/.local/bin}"
 TMPDIR_KEEP=""
@@ -72,22 +74,20 @@ case "$arch" in
 esac
 target="${arch_part}-${os_part}"
 
-# Resolve version → tag.
+# Resolve version. R2 holds a small text file at /cli/latest/version.txt
+# (e.g. "0.1.0\n") that points at the current version.
 if [ "$VERSION" = "latest" ]; then
-    tag="$(curl -fsSL "https://api.github.com/repos/${REPO}/releases/latest" \
-        | sed -n 's/.*"tag_name": *"\([^"]*\)".*/\1/p' | head -n1)"
-    if [ -z "$tag" ]; then
-        echo "knack-install: couldn't resolve latest tag from ${REPO}" >&2
+    VERSION="$(curl -fsSL "${R2_BASE}/cli/latest/version.txt" | head -n1 | tr -d '\r\n ')"
+    if [ -z "$VERSION" ]; then
+        echo "knack-install: couldn't resolve latest version from ${R2_BASE}/cli/latest/version.txt" >&2
         exit 1
     fi
-else
-    tag="cli-v${VERSION}"
 fi
 
 archive="knack-${target}.tar.gz"
-url="https://github.com/${REPO}/releases/download/${tag}/${archive}"
+url="${R2_BASE}/cli/v${VERSION}/${archive}"
 
-echo "→ knack ${tag} for ${target}"
+echo "→ knack v${VERSION} for ${target}"
 echo "→ ${url}"
 
 tmp="$(mktemp -d -t knack-install.XXXXXX)"

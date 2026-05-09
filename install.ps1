@@ -5,15 +5,16 @@
 #   $env:KNACK_VERSION = '0.2.0'; irm https://getknack.ai/install.ps1 | iex
 #   $env:KNACK_BIN_DIR = 'C:\tools\knack'; irm https://getknack.ai/install.ps1 | iex
 #
-# Detects arch, downloads the matching zip from GitHub Releases, extracts to
-# %LOCALAPPDATA%\knack\bin (or $env:KNACK_BIN_DIR), and appends that path to
-# the *user* PATH if missing. Idempotent.
+# Detects arch, downloads the matching zip from R2 (cli.getknack.ai by
+# default, overridable via $env:KNACK_R2_BASE), extracts to
+# %LOCALAPPDATA%\knack\bin (or $env:KNACK_BIN_DIR), and appends that path
+# to the *user* PATH if missing. Idempotent.
 
 [CmdletBinding()]
 param(
     [string]$Version = $env:KNACK_VERSION,
     [string]$BinDir  = $env:KNACK_BIN_DIR,
-    [string]$Repo    = $(if ($env:KNACK_REPO) { $env:KNACK_REPO } else { 'jordan-gibbs/knack' })
+    [string]$R2Base  = $(if ($env:KNACK_R2_BASE) { $env:KNACK_R2_BASE } else { 'https://cli.getknack.ai' })
 )
 
 $ErrorActionPreference = 'Stop'
@@ -28,22 +29,20 @@ $arch = if ([Environment]::Is64BitOperatingSystem) { 'x86_64' } else {
 }
 $target = "$arch-pc-windows-msvc"
 
-# Resolve version → tag.
+# Resolve version. R2 holds /cli/latest/version.txt with the current version.
 if ($Version -eq 'latest') {
-    $latest = Invoke-RestMethod -UseBasicParsing -Uri "https://api.github.com/repos/$Repo/releases/latest"
-    $tag = $latest.tag_name
-    if (-not $tag) {
-        Write-Error "knack-install: couldn't resolve latest tag from $Repo."
+    $resolved = (Invoke-WebRequest -UseBasicParsing -Uri "$R2Base/cli/latest/version.txt").Content.Trim()
+    if (-not $resolved) {
+        Write-Error "knack-install: couldn't resolve latest version from $R2Base/cli/latest/version.txt"
         exit 1
     }
-} else {
-    $tag = "cli-v$Version"
+    $Version = $resolved
 }
 
 $archive = "knack-$target.zip"
-$url = "https://github.com/$Repo/releases/download/$tag/$archive"
+$url = "$R2Base/cli/v$Version/$archive"
 
-Write-Host "-> knack $tag for $target"
+Write-Host "-> knack v$Version for $target"
 Write-Host "-> $url"
 
 $tmp = New-Item -ItemType Directory -Path (Join-Path $env:TEMP ("knack-install-{0}" -f ([guid]::NewGuid())))
