@@ -13,7 +13,7 @@
 param(
     [string]$Version = $env:KNACK_VERSION,
     [string]$BinDir  = $env:KNACK_BIN_DIR,
-    [string]$Repo    = $(if ($env:KNACK_REPO) { $env:KNACK_REPO } else { 'knack-ai/knack' })
+    [string]$Repo    = $(if ($env:KNACK_REPO) { $env:KNACK_REPO } else { 'jordan-gibbs/knack' })
 )
 
 $ErrorActionPreference = 'Stop'

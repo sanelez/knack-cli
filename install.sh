@@ -13,7 +13,7 @@
 
 set -eu
 
-REPO="${KNACK_REPO:-knack-ai/knack}"
+REPO="${KNACK_REPO:-jordan-gibbs/knack}"
 VERSION="${KNACK_VERSION:-latest}"
 BIN_DIR="${KNACK_BIN_DIR:-$HOME/.local/bin}"
 TMPDIR_KEEP=""
