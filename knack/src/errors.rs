@@ -26,7 +26,11 @@ impl ExitCode {
 #[derive(Debug, Error)]
 pub enum CliError {
     #[error("{message}")]
-    User { code: String, message: String, hint: Option<String> },
+    User {
+        code: String,
+        message: String,
+        hint: Option<String>,
+    },
 
     #[error("not signed in — run `knack auth login`")]
     AuthRequired,
@@ -38,16 +42,26 @@ pub enum CliError {
     Network(String),
 
     #[error("conflict: {message}")]
-    Conflict { message: String, hint: Option<String> },
+    Conflict {
+        message: String,
+        hint: Option<String>,
+    },
 
     #[error("plan limit hit: {message}")]
-    PlanLimit { message: String, hint: Option<String> },
+    PlanLimit {
+        message: String,
+        hint: Option<String>,
+    },
 
     #[error("not found: {0}")]
     NotFound(String),
 
     #[error("server error ({status}): {message}")]
-    Server { status: u16, code: String, message: String },
+    Server {
+        status: u16,
+        code: String,
+        message: String,
+    },
 
     #[error("{0}")]
     Internal(String),

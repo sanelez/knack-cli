@@ -61,7 +61,10 @@ async fn device_poll_pending_then_approved() {
         .await;
 
     let first = api_auth::device_poll(&client, "dc-1").await.unwrap();
-    assert!(matches!(first.status, api_auth::PollStatus::AuthorizationPending));
+    assert!(matches!(
+        first.status,
+        api_auth::PollStatus::AuthorizationPending
+    ));
 
     let second = api_auth::device_poll(&client, "dc-1").await.unwrap();
     assert!(matches!(second.status, api_auth::PollStatus::Approved));

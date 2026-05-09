@@ -6,11 +6,11 @@ use clap::Subcommand;
 use serde_json::json;
 use tokio::time::sleep;
 
-use crate::api::ApiClient;
 use crate::api::auth as api_auth;
+use crate::api::ApiClient;
 use crate::auth_store::StoredTokens;
 use crate::errors::{CliError, CliResult};
-use crate::output::{OutputMode, chatter, emit_err, emit_ok};
+use crate::output::{chatter, emit_err, emit_ok, OutputMode};
 
 #[derive(Debug, Subcommand)]
 pub enum AuthCmd {
@@ -67,8 +67,8 @@ async fn login(args: LoginArgs, client: ApiClient, mode: OutputMode) -> CliResul
     chatter(mode, "Waiting for browser approval...");
 
     let interval = Duration::from_secs(start.interval.max(1));
-    let deadline = std::time::Instant::now()
-        + Duration::from_secs(start.expires_in.max(60).min(3600) as u64);
+    let deadline =
+        std::time::Instant::now() + Duration::from_secs(start.expires_in.clamp(60, 3600) as u64);
 
     loop {
         sleep(interval).await;
@@ -159,9 +159,13 @@ async fn logout(client: ApiClient, mode: OutputMode) -> CliResult<()> {
     let _ = api_auth::logout(&client, refresh).await;
     client.store.clear(&client.account)?;
 
-    emit_ok(mode, json!({ "account": client.account, "logged_out": true }), || {
-        println!("logged out.");
-    });
+    emit_ok(
+        mode,
+        json!({ "account": client.account, "logged_out": true }),
+        || {
+            println!("logged out.");
+        },
+    );
     Ok(())
 }
 

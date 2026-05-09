@@ -61,7 +61,8 @@ pub async fn device_poll(
     let body = serde_json::to_value(&body)?;
     client
         .send_json::<DevicePollResponse>(|c| {
-            Ok(c.request_unauth(Method::POST, "/auth/device/poll").json(&body))
+            Ok(c.request_unauth(Method::POST, "/auth/device/poll")
+                .json(&body))
         })
         .await
 }

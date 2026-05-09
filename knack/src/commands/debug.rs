@@ -9,7 +9,7 @@ use serde_json::json;
 
 use crate::api::ApiClient;
 use crate::errors::CliResult;
-use crate::output::{OutputMode, emit_ok};
+use crate::output::{emit_ok, OutputMode};
 
 #[derive(Debug, Args)]
 pub struct DebugArgs {}
@@ -18,12 +18,7 @@ pub fn run(_args: DebugArgs, client: ApiClient, mode: OutputMode) -> CliResult<(
     // We deliberately do not call /auth/me — the user might be debugging an
     // unreachable API; this command must work offline.
     let token_present = client.bearer_override.is_some()
-        || client
-            .store
-            .load(&client.account)
-            .ok()
-            .flatten()
-            .is_some();
+        || client.store.load(&client.account).ok().flatten().is_some();
 
     let payload = json!({
         "version": env!("CARGO_PKG_VERSION"),
@@ -50,11 +45,22 @@ pub fn run(_args: DebugArgs, client: ApiClient, mode: OutputMode) -> CliResult<(
 
     emit_ok(mode, payload, || {
         println!("knack v{}", env!("CARGO_PKG_VERSION"));
-        println!("  os/arch     {}/{}", std::env::consts::OS, std::env::consts::ARCH);
+        println!(
+            "  os/arch     {}/{}",
+            std::env::consts::OS,
+            std::env::consts::ARCH
+        );
         println!("  api         {}", client.config.api_base);
         println!("  skills_dir  {}", client.config.skills_dir.display());
         println!("  account     {}", client.account);
-        println!("  token       {}", if token_present { "present" } else { "(not signed in)" });
+        println!(
+            "  token       {}",
+            if token_present {
+                "present"
+            } else {
+                "(not signed in)"
+            }
+        );
     });
     Ok(())
 }

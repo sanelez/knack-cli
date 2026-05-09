@@ -7,7 +7,7 @@ use std::process::ExitCode;
 
 use clap::Parser;
 
-use knack_cli::commands::{Command, GlobalArgs, build_client, dispatch};
+use knack_cli::commands::{build_client, dispatch, Command, GlobalArgs};
 use knack_cli::config::Config;
 
 #[derive(Parser, Debug)]

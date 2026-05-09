@@ -76,5 +76,7 @@ pub async fn mark(client: &ApiClient, run_id: &str, body: &RunMarkBody) -> Resul
 
 pub async fn get(client: &ApiClient, run_id: &str) -> Result<Run, CliError> {
     let path = format!("/runs/{run_id}");
-    client.send_json::<Run>(|c| c.request(Method::GET, &path)).await
+    client
+        .send_json::<Run>(|c| c.request(Method::GET, &path))
+        .await
 }

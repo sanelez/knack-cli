@@ -21,9 +21,9 @@ use clap::Args;
 use serde_json::json;
 
 use crate::api::runs as api_runs;
-use crate::api::{ApiClient, skills as api_skills};
+use crate::api::{skills as api_skills, ApiClient};
 use crate::errors::{CliError, CliResult};
-use crate::output::{OutputMode, chatter, emit_err, emit_ok};
+use crate::output::{chatter, emit_err, emit_ok, OutputMode};
 
 #[derive(Debug, Args)]
 pub struct RunArgs {
@@ -102,7 +102,10 @@ pub async fn run(args: RunArgs, client: ApiClient, mode: OutputMode) -> CliResul
         })
     });
 
-    chatter(mode, format!("starting run · skill={} runtime={}", args.slug, runtime));
+    chatter(
+        mode,
+        format!("starting run · skill={} runtime={}", args.slug, runtime),
+    );
 
     let run = api_runs::start(
         &client,
@@ -126,7 +129,11 @@ pub async fn run(args: RunArgs, client: ApiClient, mode: OutputMode) -> CliResul
                 "dry": dry,
             }),
             || {
-                let prefix = if dry { "✓ dry run logged" } else { "✓ run logged" };
+                let prefix = if dry {
+                    "✓ dry run logged"
+                } else {
+                    "✓ run logged"
+                };
                 println!("{prefix} · {}", run.id);
                 println!("  knack mark {} --status=succeeded", run.id);
             },
@@ -140,7 +147,11 @@ pub async fn run(args: RunArgs, client: ApiClient, mode: OutputMode) -> CliResul
     let started = Instant::now();
     let (status, files_touched) = match runtime.as_str() {
         "claude-code" | "cowork" => {
-            let exe = if runtime == "claude-code" { "claude" } else { "cowork" };
+            let exe = if runtime == "claude-code" {
+                "claude"
+            } else {
+                "cowork"
+            };
             match dispatch_runtime(exe, args.input.as_deref()) {
                 Ok(()) => ("succeeded", scan_output_files(&args.input)),
                 Err(e) => {
@@ -154,7 +165,10 @@ pub async fn run(args: RunArgs, client: ApiClient, mode: OutputMode) -> CliResul
             ("unknown", vec![])
         }
         other => {
-            chatter(mode, format!("unknown runtime `{other}` — leaving status=unknown"));
+            chatter(
+                mode,
+                format!("unknown runtime `{other}` — leaving status=unknown"),
+            );
             ("unknown", vec![])
         }
     };
@@ -185,7 +199,10 @@ pub async fn run(args: RunArgs, client: ApiClient, mode: OutputMode) -> CliResul
             "runtime": runtime,
         }),
         || {
-            println!("✓ run {} · {} · {:.1}s", finished.id, finished.status, duration_s);
+            println!(
+                "✓ run {} · {} · {:.1}s",
+                finished.id, finished.status, duration_s
+            );
             println!("  knack mark {} --status=succeeded", finished.id);
         },
     );
@@ -238,7 +255,9 @@ fn dispatch_runtime(exe: &str, input: Option<&Path>) -> CliResult<()> {
 /// useful for v0; a real fs-watcher comes in E9 polish.
 fn scan_output_files(input: &Option<PathBuf>) -> Vec<String> {
     let Some(input) = input else { return vec![] };
-    let Some(parent) = input.parent() else { return vec![] };
+    let Some(parent) = input.parent() else {
+        return vec![];
+    };
     let Ok(entries) = std::fs::read_dir(parent) else {
         return vec![];
     };

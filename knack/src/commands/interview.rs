@@ -24,7 +24,7 @@ use crate::api::skills as api_skills;
 use crate::api::sse::EventStream;
 use crate::api::ApiClient;
 use crate::errors::{CliError, CliResult};
-use crate::output::{OutputMode, chatter, emit_err, emit_ok};
+use crate::output::{chatter, emit_err, emit_ok, OutputMode};
 
 #[derive(Debug, Args)]
 pub struct InterviewArgs {
@@ -79,7 +79,10 @@ pub async fn run(args: InterviewArgs, client: ApiClient, mode: OutputMode) -> Cl
         },
     )
     .await?;
-    chatter(mode, format!("session {} ({})", session.id, session.current_phase));
+    chatter(
+        mode,
+        format!("session {} ({})", session.id, session.current_phase),
+    );
 
     print_banner(mode, &session.current_phase);
 
@@ -181,20 +184,15 @@ pub async fn run(args: InterviewArgs, client: ApiClient, mode: OutputMode) -> Cl
                         }
                     }
                 }
-                "rule" => {
-                    if !mode.json {
-                        #[derive(Deserialize)]
-                        struct R {
-                            text: String,
-                            kind: String,
-                        }
-                        if let Ok(r) = ev.parse::<R>() {
-                            println!();
-                            chatter(
-                                mode,
-                                format!("  · captured ({}) {}", r.kind, r.text),
-                            );
-                        }
+                "rule" if !mode.json => {
+                    #[derive(Deserialize)]
+                    struct R {
+                        text: String,
+                        kind: String,
+                    }
+                    if let Ok(r) = ev.parse::<R>() {
+                        println!();
+                        chatter(mode, format!("  · captured ({}) {}", r.kind, r.text));
                     }
                 }
                 "error" => {
@@ -264,10 +262,7 @@ async fn drive_compile(
                     if (p.pct - prev) > 0.1 || (p.pct >= 1.0 && prev < 1.0) {
                         last_progress.insert(p.file.clone(), p.pct);
                         if !mode.json {
-                            chatter(
-                                mode,
-                                format!("  · {:>14}  {:.0}%", p.file, p.pct * 100.0),
-                            );
+                            chatter(mode, format!("  · {:>14}  {:.0}%", p.file, p.pct * 100.0));
                         }
                     }
                 }
@@ -589,8 +584,14 @@ mod tests {
             guess_content_type(std::path::Path::new("a.xlsx")),
             "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
         );
-        assert_eq!(guess_content_type(std::path::Path::new("a.csv")), "text/csv");
-        assert_eq!(guess_content_type(std::path::Path::new("a.pdf")), "application/pdf");
+        assert_eq!(
+            guess_content_type(std::path::Path::new("a.csv")),
+            "text/csv"
+        );
+        assert_eq!(
+            guess_content_type(std::path::Path::new("a.pdf")),
+            "application/pdf"
+        );
         assert_eq!(
             guess_content_type(std::path::Path::new("a.unknown")),
             "application/octet-stream"

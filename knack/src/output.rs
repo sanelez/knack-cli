@@ -5,9 +5,9 @@
 //! stdout in the binary; commands emit their result through it and let the
 //! mode (json vs human) decide formatting.
 
-use console::{Term, style};
+use console::{style, Term};
 use serde::Serialize;
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 
 use crate::errors::CliError;
 

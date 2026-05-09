@@ -41,7 +41,10 @@ async fn list_returns_paged_skills() {
     let page = api_skills::list(&client, None, None, 50).await.unwrap();
     assert_eq!(page.items.len(), 1);
     assert_eq!(page.items[0].slug, "monthly-close");
-    assert_eq!(page.items[0].current_version_semver.as_deref(), Some("1.0.0"));
+    assert_eq!(
+        page.items[0].current_version_semver.as_deref(),
+        Some("1.0.0")
+    );
     assert!(page.next_cursor.is_none());
 }
 

@@ -8,7 +8,7 @@
 //! command tree, and humans should run `knack docs commands`).
 
 use clap::{Args, FromArgMatches, Subcommand};
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 
 use crate::errors::CliResult;
 use crate::output::{OutputMode, SCHEMA};
@@ -71,10 +71,7 @@ fn describe_subcommands(cmd: &clap::Command) -> Value {
 }
 
 fn describe_command(cmd: &clap::Command) -> Value {
-    let about = cmd
-        .get_about()
-        .map(|s| s.to_string())
-        .unwrap_or_default();
+    let about = cmd.get_about().map(|s| s.to_string()).unwrap_or_default();
     let subs = describe_subcommands(cmd);
     let flags = describe_args(cmd);
     json!({
@@ -94,7 +91,10 @@ fn describe_args(cmd: &clap::Command) -> Value {
         let long = arg.get_long().map(|s| format!("--{s}"));
         let short = arg.get_short().map(|c| format!("-{c}"));
         let help = arg.get_help().map(|s| s.to_string()).unwrap_or_default();
-        let takes_value = !matches!(arg.get_action(), clap::ArgAction::SetTrue | clap::ArgAction::SetFalse);
+        let takes_value = !matches!(
+            arg.get_action(),
+            clap::ArgAction::SetTrue | clap::ArgAction::SetFalse
+        );
         let possible_values: Vec<String> = arg
             .get_possible_values()
             .iter()
@@ -140,10 +140,7 @@ mod tests {
         let codes = exit_codes();
         let arr = codes.as_array().unwrap();
         // Ensure every documented variant is present.
-        let names: Vec<&str> = arr
-            .iter()
-            .map(|v| v["name"].as_str().unwrap())
-            .collect();
+        let names: Vec<&str> = arr.iter().map(|v| v["name"].as_str().unwrap()).collect();
         for expected in [
             "SUCCESS", "USER", "AUTH", "NETWORK", "CONFLICT", "PLAN", "USAGE", "INTERNAL",
         ] {
@@ -154,11 +151,10 @@ mod tests {
     #[test]
     fn root_command_has_all_subcommands() {
         let root = build_root_command();
-        let names: Vec<&str> = root
-            .get_subcommands()
-            .map(|s| s.get_name())
-            .collect();
-        for expected in ["auth", "list", "pull", "diff", "edit", "publish", "run", "mark", "docs"] {
+        let names: Vec<&str> = root.get_subcommands().map(|s| s.get_name()).collect();
+        for expected in [
+            "auth", "list", "pull", "diff", "edit", "publish", "run", "mark", "docs",
+        ] {
             assert!(names.contains(&expected), "missing subcommand {expected}");
         }
     }

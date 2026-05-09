@@ -35,7 +35,11 @@ pub async fn fixture() -> (MockServer, ApiClient, Arc<MemoryStore>) {
     let mut config = Config::load();
     config.api_base = server.uri();
 
-    let client = ApiClient::new(config, store.clone() as Arc<dyn TokenStore + Send + Sync>, "default");
+    let client = ApiClient::new(
+        config,
+        store.clone() as Arc<dyn TokenStore + Send + Sync>,
+        "default",
+    );
     (server, client, store)
 }
 

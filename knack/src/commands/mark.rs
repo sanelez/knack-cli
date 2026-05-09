@@ -3,9 +3,9 @@
 use clap::Args;
 use serde_json::json;
 
-use crate::api::{ApiClient, runs as api_runs};
+use crate::api::{runs as api_runs, ApiClient};
 use crate::errors::CliResult;
-use crate::output::{OutputMode, emit_err, emit_ok};
+use crate::output::{emit_err, emit_ok, OutputMode};
 
 #[derive(Debug, Args)]
 pub struct MarkArgs {
@@ -63,8 +63,8 @@ pub async fn run(args: MarkArgs, client: ApiClient, mode: OutputMode) -> CliResu
 mod tests {
     // The mark command's logic is mostly the API call; tests are covered by
     // CliError exit-code mapping in errors.rs and the integration tests.
-    use crate::output::err_envelope;
     use crate::errors::CliError;
+    use crate::output::err_envelope;
 
     #[test]
     fn mark_failed_envelope_includes_hint_when_present() {

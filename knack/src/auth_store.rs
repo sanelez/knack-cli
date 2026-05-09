@@ -34,7 +34,9 @@ pub struct KeyringStore {
 
 impl KeyringStore {
     pub fn new(service: impl Into<String>) -> Self {
-        Self { service: service.into() }
+        Self {
+            service: service.into(),
+        }
     }
 
     fn entry(&self, account: &str) -> Result<Entry, CliError> {
@@ -44,7 +46,11 @@ impl KeyringStore {
 
 impl TokenStore for KeyringStore {
     fn load(&self, account: &str) -> Result<Option<StoredTokens>, CliError> {
-        let account = if account.is_empty() { DEFAULT_ACCOUNT } else { account };
+        let account = if account.is_empty() {
+            DEFAULT_ACCOUNT
+        } else {
+            account
+        };
         let entry = self.entry(account)?;
         match entry.get_password() {
             Ok(blob) => {
@@ -57,7 +63,11 @@ impl TokenStore for KeyringStore {
     }
 
     fn save(&self, account: &str, tokens: &StoredTokens) -> Result<(), CliError> {
-        let account = if account.is_empty() { DEFAULT_ACCOUNT } else { account };
+        let account = if account.is_empty() {
+            DEFAULT_ACCOUNT
+        } else {
+            account
+        };
         let entry = self.entry(account)?;
         let blob = serde_json::to_string(tokens)?;
         entry.set_password(&blob)?;
@@ -65,7 +75,11 @@ impl TokenStore for KeyringStore {
     }
 
     fn clear(&self, account: &str) -> Result<(), CliError> {
-        let account = if account.is_empty() { DEFAULT_ACCOUNT } else { account };
+        let account = if account.is_empty() {
+            DEFAULT_ACCOUNT
+        } else {
+            account
+        };
         let entry = self.entry(account)?;
         match entry.delete_credential() {
             Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),

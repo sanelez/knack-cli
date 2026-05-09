@@ -8,9 +8,9 @@ use clap::Args;
 use serde_json::json;
 use similar::{ChangeTag, TextDiff};
 
-use crate::api::{ApiClient, skills as api_skills};
+use crate::api::{skills as api_skills, ApiClient};
 use crate::errors::{CliError, CliResult};
-use crate::output::{OutputMode, emit_err, emit_ok};
+use crate::output::{emit_err, emit_ok, OutputMode};
 
 #[derive(Debug, Args)]
 pub struct DiffArgs {

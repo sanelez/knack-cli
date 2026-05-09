@@ -90,7 +90,10 @@ impl EventStream {
             if line.is_empty() {
                 // End of frame — emit if we have anything.
                 if self.pending_event.is_some() || !self.pending_data.is_empty() {
-                    let name = self.pending_event.take().unwrap_or_else(|| "message".into());
+                    let name = self
+                        .pending_event
+                        .take()
+                        .unwrap_or_else(|| "message".into());
                     let data = std::mem::take(&mut self.pending_data);
                     return Some(Event { name, data });
                 }
@@ -183,9 +186,7 @@ mod tests {
 
     #[test]
     fn parses_event_data_pairs() {
-        let events = drain_all(
-            "event: a\ndata: 1\n\nevent: b\ndata: 2\n\n",
-        );
+        let events = drain_all("event: a\ndata: 1\n\nevent: b\ndata: 2\n\n");
         assert_eq!(events.len(), 2);
         assert_eq!(events[0].name, "a");
         assert_eq!(events[1].name, "b");

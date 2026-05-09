@@ -6,10 +6,10 @@ use std::path::{Path, PathBuf};
 use clap::Args;
 use serde_json::json;
 
-use crate::api::{ApiClient, skills as api_skills};
+use crate::api::{skills as api_skills, ApiClient};
 use crate::commands::edit::bump_patch;
 use crate::errors::{CliError, CliResult};
-use crate::output::{OutputMode, emit_err, emit_ok};
+use crate::output::{emit_err, emit_ok, OutputMode};
 
 #[derive(Debug, Args)]
 pub struct PublishArgs {
@@ -55,11 +55,13 @@ pub async fn run(args: PublishArgs, client: ApiClient, mode: OutputMode) -> CliR
         .clone()
         .unwrap_or_else(|| "0.0.0".into());
 
-    let next = match (args.as_version.clone(), args.major, args.minor, args.patch) {
-        (Some(v), _, _, _) => v,
-        (_, true, _, _) => bump(&current_semver, BumpKind::Major)?,
-        (_, _, true, _) => bump(&current_semver, BumpKind::Minor)?,
-        (_, _, _, true) | _ => bump_patch(&current_semver)?,
+    // Default bump is patch (--patch flag is documented but not load-bearing —
+    // its absence still picks the patch path).
+    let next = match (args.as_version.clone(), args.major, args.minor) {
+        (Some(v), _, _) => v,
+        (_, true, _) => bump(&current_semver, BumpKind::Major)?,
+        (_, _, true) => bump(&current_semver, BumpKind::Minor)?,
+        _ => bump_patch(&current_semver)?,
     };
 
     let parent_id = skill.current_version_id.clone();

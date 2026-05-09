@@ -5,7 +5,7 @@ use serde_json::json;
 
 use crate::docs;
 use crate::errors::{CliError, CliResult};
-use crate::output::{OutputMode, emit_err, emit_ok};
+use crate::output::{emit_err, emit_ok, OutputMode};
 
 #[derive(Debug, Args)]
 pub struct DocsArgs {

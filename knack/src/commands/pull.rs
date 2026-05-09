@@ -16,9 +16,9 @@ use std::path::PathBuf;
 use clap::Args;
 use serde_json::json;
 
-use crate::api::{ApiClient, skills as api_skills};
+use crate::api::{skills as api_skills, ApiClient};
 use crate::errors::{CliError, CliResult};
-use crate::output::{OutputMode, chatter, emit_err, emit_ok};
+use crate::output::{chatter, emit_err, emit_ok, OutputMode};
 
 #[derive(Debug, Args)]
 pub struct PullArgs {
@@ -67,16 +67,32 @@ pub async fn run(args: PullArgs, client: ApiClient, mode: OutputMode) -> CliResu
         }
     };
 
-    let target_root = args.target.unwrap_or_else(|| client.config.skills_dir.clone());
+    let target_root = args
+        .target
+        .unwrap_or_else(|| client.config.skills_dir.clone());
     let dir = target_root.join(&skill.slug);
     std::fs::create_dir_all(&dir)?;
 
     let mut written = Vec::new();
     written.extend(write_if_changed(&dir.join("SKILL.md"), &version.skill_md)?);
-    written.extend(write_if_changed(&dir.join("intuition.md"), &version.intuition_md)?);
-    written.extend(write_if_changed(&dir.join("meta.knack.yaml"), &version.meta_yaml)?);
+    written.extend(write_if_changed(
+        &dir.join("intuition.md"),
+        &version.intuition_md,
+    )?);
+    written.extend(write_if_changed(
+        &dir.join("meta.knack.yaml"),
+        &version.meta_yaml,
+    )?);
 
-    chatter(mode, format!("pulled {}@{} → {}", skill.slug, version.version, dir.display()));
+    chatter(
+        mode,
+        format!(
+            "pulled {}@{} → {}",
+            skill.slug,
+            version.version,
+            dir.display()
+        ),
+    );
 
     emit_ok(
         mode,

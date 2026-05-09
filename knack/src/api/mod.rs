@@ -50,14 +50,20 @@ fn map_api_error(status: StatusCode, body: Option<ApiErrorBody>) -> CliError {
     };
     match (status.as_u16(), code.as_str()) {
         (401, _) => CliError::AuthFailed(message),
-        (403, "PLAN_LIMIT_EXCEEDED") => CliError::PlanLimit { message, hint: None },
+        (403, "PLAN_LIMIT_EXCEEDED") => CliError::PlanLimit {
+            message,
+            hint: None,
+        },
         (403, _) => CliError::User {
             code: "FORBIDDEN".into(),
             message,
             hint: None,
         },
         (404, _) => CliError::NotFound(message),
-        (409, _) => CliError::Conflict { message, hint: None },
+        (409, _) => CliError::Conflict {
+            message,
+            hint: None,
+        },
         (s, _) if s >= 500 => CliError::Server {
             status: s,
             code,
@@ -141,17 +147,18 @@ impl ApiClient {
         if status.is_success() {
             return decode_body(resp).await;
         }
-        if status == StatusCode::UNAUTHORIZED && self.bearer_override.is_none() {
-            // Refresh once, retry once.
-            if self.try_refresh().await.is_ok() {
-                let resp2 = build(self)?.send().await?;
-                let status2 = resp2.status();
-                if status2.is_success() {
-                    return decode_body(resp2).await;
-                }
-                let body = resp2.json::<ApiErrorBody>().await.ok();
-                return Err(map_api_error(status2, body));
+        // Refresh once, retry once.
+        if status == StatusCode::UNAUTHORIZED
+            && self.bearer_override.is_none()
+            && self.try_refresh().await.is_ok()
+        {
+            let resp2 = build(self)?.send().await?;
+            let status2 = resp2.status();
+            if status2.is_success() {
+                return decode_body(resp2).await;
             }
+            let body = resp2.json::<ApiErrorBody>().await.ok();
+            return Err(map_api_error(status2, body));
         }
         let body = resp.json::<ApiErrorBody>().await.ok();
         Err(map_api_error(status, body))
@@ -167,16 +174,17 @@ impl ApiClient {
         if status.is_success() {
             return Ok(());
         }
-        if status == StatusCode::UNAUTHORIZED && self.bearer_override.is_none() {
-            if self.try_refresh().await.is_ok() {
-                let resp2 = build(self)?.send().await?;
-                let status2 = resp2.status();
-                if status2.is_success() {
-                    return Ok(());
-                }
-                let body = resp2.json::<ApiErrorBody>().await.ok();
-                return Err(map_api_error(status2, body));
+        if status == StatusCode::UNAUTHORIZED
+            && self.bearer_override.is_none()
+            && self.try_refresh().await.is_ok()
+        {
+            let resp2 = build(self)?.send().await?;
+            let status2 = resp2.status();
+            if status2.is_success() {
+                return Ok(());
             }
+            let body = resp2.json::<ApiErrorBody>().await.ok();
+            return Err(map_api_error(status2, body));
         }
         let body = resp.json::<ApiErrorBody>().await.ok();
         Err(map_api_error(status, body))

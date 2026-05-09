@@ -6,9 +6,9 @@ use std::process::Command;
 use clap::Args;
 use serde_json::json;
 
-use crate::api::{ApiClient, skills as api_skills};
+use crate::api::{skills as api_skills, ApiClient};
 use crate::errors::{CliError, CliResult};
-use crate::output::{OutputMode, chatter, emit_err, emit_ok};
+use crate::output::{chatter, emit_err, emit_ok, OutputMode};
 
 #[derive(Debug, Args)]
 pub struct EditArgs {
@@ -36,10 +36,9 @@ pub async fn run(args: EditArgs, client: ApiClient, mode: OutputMode) -> CliResu
         }
     };
 
-    let current_semver = skill
-        .current_version_semver
-        .clone()
-        .ok_or_else(|| CliError::NotFound(format!("skill `{}` has no current version", args.slug)))?;
+    let current_semver = skill.current_version_semver.clone().ok_or_else(|| {
+        CliError::NotFound(format!("skill `{}` has no current version", args.slug))
+    })?;
     let current = api_skills::get_version(&client, &skill.id, &current_semver).await?;
 
     let dir = tempfile::tempdir()?;
@@ -91,7 +90,12 @@ pub async fn run(args: EditArgs, client: ApiClient, mode: OutputMode) -> CliResu
             "parent_version_id": current.id,
             "changed": true,
         }),
-        || println!("✓ {}@{} → {}", args.slug, current.version, new_version.version),
+        || {
+            println!(
+                "✓ {}@{} → {}",
+                args.slug, current.version, new_version.version
+            )
+        },
     );
     Ok(())
 }
