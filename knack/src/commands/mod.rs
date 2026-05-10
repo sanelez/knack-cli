@@ -2,11 +2,10 @@
 
 pub mod auth;
 pub mod completions;
+pub mod create;
 pub mod debug;
 pub mod diff;
 pub mod docs;
-pub mod edit;
-pub mod interview;
 pub mod introspect;
 pub mod list;
 pub mod mark;
@@ -41,8 +40,8 @@ pub enum Command {
     /// Diff two versions of a skill (or local vs cloud)
     Diff(diff::DiffArgs),
 
-    /// Open a skill's SKILL.md in $EDITOR; on save, push as a new version
-    Edit(edit::EditArgs),
+    /// Create a new skill shell (slug + name + scope). Run `knack publish` after.
+    Create(create::CreateArgs),
 
     /// Bump the semver and push the local skill folder
     Publish(publish::PublishArgs),
@@ -55,9 +54,6 @@ pub enum Command {
 
     /// Print embedded docs (offline)
     Docs(docs::DocsArgs),
-
-    /// CLI-native interview that drives the conductor end-to-end
-    Interview(interview::InterviewArgs),
 
     /// Emit the full command tree as JSON (agent introspection)
     Introspect(introspect::IntrospectArgs),
@@ -120,12 +116,11 @@ pub async fn dispatch(cmd: Command, client: ApiClient, mode: OutputMode) -> CliR
         Command::List(a) => list::run(a, client, mode).await,
         Command::Pull(a) => pull::run(a, client, mode).await,
         Command::Diff(a) => diff::run(a, client, mode).await,
-        Command::Edit(a) => edit::run(a, client, mode).await,
+        Command::Create(a) => create::run(a, client, mode).await,
         Command::Publish(a) => publish::run(a, client, mode).await,
         Command::Run(a) => run::run(a, client, mode).await,
         Command::Mark(a) => mark::run(a, client, mode).await,
         Command::Docs(a) => docs::run(a, mode),
-        Command::Interview(a) => interview::run(a, client, mode).await,
         Command::Introspect(a) => introspect::run(a, mode),
         Command::Completions(a) => completions::run(a, mode),
         Command::Debug(a) => debug::run(a, client, mode),

@@ -39,7 +39,7 @@ pub async fn run(args: ListArgs, client: ApiClient, mode: OutputMode) -> CliResu
         }),
         || {
             if page.items.is_empty() {
-                println!("(no skills yet — `knack interview --local` to make one)");
+                println!("(no skills yet. run `knack create <slug> --name \"...\"` after authoring SKILL.md)");
                 return;
             }
             for s in &page.items {

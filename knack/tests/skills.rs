@@ -110,6 +110,77 @@ async fn find_by_slug_paginates_and_matches() {
 }
 
 #[tokio::test]
+async fn create_posts_full_body_and_returns_skill() {
+    use wiremock::matchers::body_partial_json;
+
+    let (server, client, _store) = common::fixture().await;
+
+    Mock::given(method("POST"))
+        .and(path("/skills"))
+        .and(body_partial_json(json!({
+            "slug": "month-end-close",
+            "name": "Month-end close",
+            "scope": "personal",
+        })))
+        .respond_with(ResponseTemplate::new(201).set_body_json(json!({
+            "id": "00000000-0000-0000-0000-0000000000aa",
+            "slug": "month-end-close",
+            "name": "Month-end close",
+            "scope": "personal",
+            "owner_user_id": "u1",
+            "owner_team_id": null,
+            "current_version_id": null,
+            "current_version_semver": null,
+            "created_at": "2026-05-10T00:00:00Z",
+        })))
+        .mount(&server)
+        .await;
+
+    let skill = api_skills::create(
+        &client,
+        &api_skills::SkillCreate {
+            slug: "month-end-close".into(),
+            name: "Month-end close".into(),
+            scope: Some("personal".into()),
+            owner_team_id: None,
+        },
+    )
+    .await
+    .unwrap();
+    assert_eq!(skill.slug, "month-end-close");
+    assert!(skill.current_version_id.is_none());
+}
+
+#[tokio::test]
+async fn create_409_maps_to_conflict() {
+    use knack_cli::errors::CliError;
+
+    let (server, client, _store) = common::fixture().await;
+
+    Mock::given(method("POST"))
+        .and(path("/skills"))
+        .respond_with(ResponseTemplate::new(409).set_body_json(json!({
+            "ok": false,
+            "error": { "code": "SLUG_TAKEN", "message": "slug already exists" }
+        })))
+        .mount(&server)
+        .await;
+
+    let err = api_skills::create(
+        &client,
+        &api_skills::SkillCreate {
+            slug: "taken".into(),
+            name: "Taken".into(),
+            scope: Some("personal".into()),
+            owner_team_id: None,
+        },
+    )
+    .await
+    .unwrap_err();
+    matches!(err, CliError::Conflict { .. });
+}
+
+#[tokio::test]
 async fn create_version_posts_full_body() {
     use wiremock::matchers::body_partial_json;
 

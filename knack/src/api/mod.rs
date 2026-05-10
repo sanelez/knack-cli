@@ -5,15 +5,12 @@
 //!  - Translate `{ ok: false, error: { code, message } }` envelopes into [`CliError`]
 //!  - Refresh tokens transparently on a single 401, re-attempting once
 //!
-//! Lower-level resource modules (`auth`, `skills`, `runs`, `interview`) take a
-//! reference to this client.
+//! Lower-level resource modules (`auth`, `skills`, `runs`) take a reference to
+//! this client.
 
-pub mod artifacts;
 pub mod auth;
-pub mod interview;
 pub mod runs;
 pub mod skills;
-pub mod sse;
 
 use std::sync::Arc;
 

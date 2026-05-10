@@ -7,7 +7,6 @@ use clap::Args;
 use serde_json::json;
 
 use crate::api::{skills as api_skills, ApiClient};
-use crate::commands::edit::bump_patch;
 use crate::errors::{CliError, CliResult};
 use crate::output::{emit_err, emit_ok, OutputMode};
 
@@ -99,6 +98,33 @@ enum BumpKind {
     Minor,
 }
 
+/// `1.0.0` → `1.0.1`. Mirrors the Python helper at
+/// `apps/api/knack_api/services/skills.py:bump_patch`.
+fn bump_patch(semver: &str) -> CliResult<String> {
+    let s = semver.strip_prefix('v').unwrap_or(semver);
+    let parts: Vec<&str> = s.split('.').collect();
+    let (a, b, c) = match parts.as_slice() {
+        [a, b] => (a, b, "0"),
+        [a, b, c] => (a, b, *c),
+        _ => {
+            return Err(CliError::User {
+                code: "PUBLISH_BAD_SEMVER".into(),
+                message: format!("can't parse semver `{semver}`"),
+                hint: None,
+            });
+        }
+    };
+    let parse = |x: &str| {
+        x.parse::<u64>().map_err(|_| CliError::User {
+            code: "PUBLISH_BAD_SEMVER".into(),
+            message: format!("non-numeric component in `{semver}`"),
+            hint: None,
+        })
+    };
+    let (a, b, c) = (parse(a)?, parse(b)?, parse(c)?);
+    Ok(format!("{}.{}.{}", a, b, c + 1))
+}
+
 fn bump(semver: &str, kind: BumpKind) -> CliResult<String> {
     let s = semver.strip_prefix('v').unwrap_or(semver);
     let parts: Vec<&str> = s.split('.').collect();
@@ -131,7 +157,7 @@ fn read_required(path: &Path) -> CliResult<String> {
     std::fs::read_to_string(path).map_err(|e| CliError::User {
         code: "PUBLISH_MISSING_FILE".into(),
         message: format!("can't read {}: {e}", path.display()),
-        hint: Some("did you `knack pull` first or `knack interview`?".into()),
+        hint: Some("did you `knack pull` first, or write SKILL.md to the folder?".into()),
     })
 }
 
@@ -157,5 +183,18 @@ mod tests {
     #[test]
     fn bump_rejects_garbage() {
         assert!(bump("nope", BumpKind::Major).is_err());
+    }
+
+    #[test]
+    fn bump_patch_basic() {
+        assert_eq!(bump_patch("1.0.0").unwrap(), "1.0.1");
+        assert_eq!(bump_patch("0.1").unwrap(), "0.1.1");
+        assert_eq!(bump_patch("v2.3.4").unwrap(), "2.3.5");
+    }
+
+    #[test]
+    fn bump_patch_rejects_garbage() {
+        assert!(bump_patch("not-a-version").is_err());
+        assert!(bump_patch("1.x.0").is_err());
     }
 }
