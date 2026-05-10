@@ -3,12 +3,12 @@ resolver = "2"
 members = ["knack"]
 
 [workspace.package]
-version = "0.0.0"
+version = "0.1.0"
 edition = "2021"
 rust-version = "1.80"
 authors = ["Knack <hi@getknack.ai>"]
 license = "MIT"
-repository = "https://github.com/knack-ai/knack"
+repository = "https://github.com/jordan-gibbs/knack"
 
 [workspace.dependencies]
 clap = { version = "4.5", features = ["derive", "env"] }
