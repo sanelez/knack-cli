@@ -153,7 +153,7 @@ mod tests {
         let root = build_root_command();
         let names: Vec<&str> = root.get_subcommands().map(|s| s.get_name()).collect();
         for expected in [
-            "auth", "list", "pull", "diff", "edit", "publish", "run", "mark", "docs",
+            "auth", "list", "pull", "diff", "create", "publish", "run", "mark", "docs",
         ] {
             assert!(names.contains(&expected), "missing subcommand {expected}");
         }
