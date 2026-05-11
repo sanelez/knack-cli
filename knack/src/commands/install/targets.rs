@@ -44,8 +44,12 @@ pub struct AgentTarget {
 pub static TARGETS: &[AgentTarget] = &[
     AgentTarget {
         name: "claude",
-        display: "Claude Code",
-        env_markers: &["CLAUDECODE"],
+        display: "Claude Code / Claude Cowork",
+        // CLAUDECODE=1 is set by Claude Code on every shell it spawns;
+        // CLAUDE_CODE_IS_COWORK is the internal flag Cowork sets to enable
+        // eager-flush behavior. Cowork shares the same ~/.claude/CLAUDE.md
+        // context system, so one target covers both.
+        env_markers: &["CLAUDECODE", "CLAUDE_CODE_IS_COWORK"],
         binary_markers: &["claude"],
         config_path: claude_path,
         style: ConfigStyle::AppendBlock,
@@ -65,6 +69,51 @@ pub static TARGETS: &[AgentTarget] = &[
         binary_markers: &["cursor"],
         config_path: cursor_path,
         style: ConfigStyle::WriteFile,
+    },
+    AgentTarget {
+        name: "windsurf",
+        display: "Windsurf (Cascade)",
+        env_markers: &[],
+        binary_markers: &["windsurf"],
+        config_path: windsurf_path,
+        style: ConfigStyle::AppendBlock,
+    },
+    AgentTarget {
+        name: "cline",
+        // Cline is a VS Code extension; no env or binary marker on the
+        // host shell. Users invoke `knack install cline` manually. We write
+        // a dedicated file under .clinerules/ which Cline auto-loads.
+        display: "Cline",
+        env_markers: &[],
+        binary_markers: &[],
+        config_path: cline_path,
+        style: ConfigStyle::AppendBlock,
+    },
+    AgentTarget {
+        name: "continue",
+        // Continue.dev: same story as Cline. Write a discrete file under
+        // .continue/rules/ which the extension auto-loads at activation.
+        display: "Continue.dev",
+        env_markers: &[],
+        binary_markers: &[],
+        config_path: continue_path,
+        style: ConfigStyle::AppendBlock,
+    },
+    AgentTarget {
+        name: "kiro",
+        display: "Kiro (AWS)",
+        env_markers: &[],
+        binary_markers: &["kiro"],
+        config_path: kiro_path,
+        style: ConfigStyle::AppendBlock,
+    },
+    AgentTarget {
+        name: "trae",
+        display: "Trae (ByteDance)",
+        env_markers: &[],
+        binary_markers: &["trae"],
+        config_path: trae_path,
+        style: ConfigStyle::AppendBlock,
     },
     AgentTarget {
         name: "aider",
@@ -156,6 +205,42 @@ fn cursor_path() -> Option<PathBuf> {
 fn aider_path() -> Option<PathBuf> {
     // Aider reads CONVENTIONS.md at the repo root when invoked with --read.
     std::env::current_dir().ok().map(|c| c.join("CONVENTIONS.md"))
+}
+
+fn windsurf_path() -> Option<PathBuf> {
+    // Windsurf (Cascade) auto-loads AGENTS.md at the project root as an
+    // always-on rule. Falls back to CWD if not in a git repo.
+    std::env::current_dir().ok().map(|c| c.join("AGENTS.md"))
+}
+
+fn cline_path() -> Option<PathBuf> {
+    // Cline auto-loads every file in .clinerules/. Writing a dedicated
+    // knack.md keeps our block scoped and out of the way of the user's own
+    // .clinerules content.
+    std::env::current_dir()
+        .ok()
+        .map(|c| c.join(".clinerules").join("knack.md"))
+}
+
+fn continue_path() -> Option<PathBuf> {
+    // Continue.dev auto-loads every file in .continue/rules/.
+    std::env::current_dir()
+        .ok()
+        .map(|c| c.join(".continue").join("rules").join("knack.md"))
+}
+
+fn kiro_path() -> Option<PathBuf> {
+    // Kiro (AWS) reads AGENTS.md from ~/.kiro/steering/ as global guidance
+    // applied to every workspace.
+    dirs::home_dir().map(|h| h.join(".kiro").join("steering").join("AGENTS.md"))
+}
+
+fn trae_path() -> Option<PathBuf> {
+    // Trae (ByteDance) uses .trae/rules/project_rules.md as the project
+    // rules file. AppendBlock preserves any existing user content.
+    std::env::current_dir()
+        .ok()
+        .map(|c| c.join(".trae").join("rules").join("project_rules.md"))
 }
 
 fn gemini_path() -> Option<PathBuf> {

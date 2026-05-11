@@ -265,8 +265,8 @@ mod tests {
     fn target_names_includes_every_planned_agent() {
         let names = targets::names();
         for required in [
-            "claude", "codex", "cursor", "aider", "gemini", "opencode", "factory", "amp",
-            "generic",
+            "claude", "codex", "cursor", "windsurf", "cline", "continue", "kiro", "trae",
+            "aider", "gemini", "opencode", "factory", "amp", "generic",
         ] {
             assert!(names.contains(&required), "missing target: {required}");
         }
