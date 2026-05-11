@@ -219,6 +219,7 @@ async fn create_version_posts_full_body() {
             meta_yaml: String::new(),
             parent_version_id: None,
             artifact_ids: vec![],
+            packed_s3_key: None,
         },
     )
     .await
