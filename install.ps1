@@ -1,4 +1,4 @@
-# knack CLI installer — Windows (PowerShell 5.1+).
+# knack CLI installer for Windows (PowerShell 5.1+).
 #
 # Usage:
 #   irm https://getknack.ai/install.ps1 | iex
@@ -22,7 +22,7 @@ $ErrorActionPreference = 'Stop'
 if (-not $Version) { $Version = 'latest' }
 if (-not $BinDir)  { $BinDir  = Join-Path $env:LOCALAPPDATA 'knack\bin' }
 
-# Detect arch — Windows only ships x86_64 for v1.
+# Detect arch. Windows only ships x86_64 for v1.
 $arch = if ([Environment]::Is64BitOperatingSystem) { 'x86_64' } else {
     Write-Error 'knack-install: 32-bit Windows is not supported.'
     exit 1
@@ -65,7 +65,7 @@ try {
     if (Test-Path $tmp) { Remove-Item -Recurse -Force $tmp }
 }
 
-# Add to user PATH idempotently. We *only* touch user PATH — never machine.
+# Add to user PATH idempotently. We *only* touch user PATH, never machine.
 $userPath = [Environment]::GetEnvironmentVariable('Path', 'User')
 if ($userPath -notlike "*$BinDir*") {
     $newPath = if ([string]::IsNullOrEmpty($userPath)) { $BinDir } else { "$BinDir;$userPath" }
@@ -74,6 +74,6 @@ if ($userPath -notlike "*$BinDir*") {
     Write-Host "Added $BinDir to user PATH. Restart your shell for changes to take effect."
 }
 
-# Verify — invoke the freshly installed binary directly so we don't depend on
+# Verify: invoke the freshly installed binary directly so we don't depend on
 # the new PATH being in this session yet.
 & (Join-Path $BinDir 'knack.exe') --version

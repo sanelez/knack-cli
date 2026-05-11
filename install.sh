@@ -1,5 +1,5 @@
 #!/usr/bin/env sh
-# knack CLI installer — macOS + Linux.
+# knack CLI installer for macOS and Linux.
 #
 # Usage:
 #   curl -fsSL https://getknack.ai/install | sh
@@ -9,7 +9,7 @@
 # Detects OS+arch, downloads the matching binary from R2 (cli.getknack.ai
 # by default, overridable via KNACK_R2_BASE), extracts it into ~/.local/bin
 # (or $KNACK_BIN_DIR), and reminds you to add that directory to PATH if
-# it's not already there. Idempotent — re-running upgrades in place.
+# it's not already there. Idempotent: re-running upgrades in place.
 
 set -eu
 
@@ -110,7 +110,7 @@ chmod +x "$BIN_DIR/knack"
 
 echo "[OK] installed to $BIN_DIR/knack"
 
-# PATH check — print the export line if BIN_DIR isn't on PATH yet, but never
+# PATH check: print the export line if BIN_DIR isn't on PATH yet, but never
 # auto-edit the user's shell profile (too easy to mangle).
 case ":$PATH:" in
     *":$BIN_DIR:"*) ;;
