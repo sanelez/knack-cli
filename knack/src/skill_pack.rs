@@ -415,40 +415,19 @@ mod tests {
     }
 
     #[test]
-    fn unpack_rejects_path_traversal() {
-        // Hand-craft a tarball with a "../escape" entry.
-        let mut gz = GzEncoder::new(Vec::new(), Compression::new(6));
-        {
-            let mut builder = tar::Builder::new(&mut gz);
-            let mut h = tar::Header::new_ustar();
-            h.set_path("../escape.txt").unwrap();
-            h.set_size(3);
-            h.set_mode(0o644);
-            h.set_mtime(0);
-            h.set_cksum();
-            builder.append(&h, &b"pwn"[..]).unwrap();
-            // Need a manifest to get past the no-manifest check, but the
-            // unsafe-name check should fire before manifest verification.
-            let mf = Manifest {
-                version: 1,
-                files: BTreeMap::new(),
-            };
-            let mb = mf.to_json().into_bytes();
-            let mut hm = tar::Header::new_ustar();
-            hm.set_path(MANIFEST_PATH).unwrap();
-            hm.set_size(mb.len() as u64);
-            hm.set_mode(0o644);
-            hm.set_mtime(0);
-            hm.set_cksum();
-            builder.append(&hm, &mb[..]).unwrap();
-            builder.finish().unwrap();
+    fn check_safe_name_rejects_traversal_and_absolute() {
+        // We can't easily forge a malicious tarball through the rust `tar`
+        // crate (it refuses to write paths containing `..` at pack time).
+        // Instead, verify the unpack-time guard directly.
+        for bad in ["../escape.txt", "/etc/passwd", "ok/../bad", "ok/../../oops"] {
+            assert!(
+                check_safe_name(bad).is_err(),
+                "expected `{bad}` to be rejected"
+            );
         }
-        let bytes = gz.finish().unwrap();
-
-        let dir = tempdir().unwrap();
-        let err = unpack_skill(&bytes, dir.path()).unwrap_err();
-        let code = format!("{:?}", err);
-        assert!(code.contains("UNPACK_UNSAFE_NAME"), "got {code}");
+        for good in ["SKILL.md", "scripts/fetch.py", "references/policy.md"] {
+            assert!(check_safe_name(good).is_ok(), "expected `{good}` to pass");
+        }
     }
 
     #[test]
