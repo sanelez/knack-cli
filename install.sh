@@ -123,3 +123,13 @@ case ":$PATH:" in
 esac
 
 "$BIN_DIR/knack" --version || true
+
+# Register knack with the AI agent the user is running in (Claude Code,
+# Codex, Cursor, ...). Best-effort: if the detector finds nothing, it writes
+# the generic AGENTS.md fallback. Non-fatal — agent integration is a
+# courtesy, not a requirement for the CLI to work.
+if "$BIN_DIR/knack" install --auto >/dev/null 2>&1; then
+    echo "[OK] registered with detected agent (re-run \`knack install\` to refresh)"
+else
+    echo "  Tip: run \`knack install\` to register the CLI with your AI agent."
+fi

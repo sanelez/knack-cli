@@ -76,4 +76,16 @@ if ($userPath -notlike "*$BinDir*") {
 
 # Verify: invoke the freshly installed binary directly so we don't depend on
 # the new PATH being in this session yet.
-& (Join-Path $BinDir 'knack.exe') --version
+$knackExe = Join-Path $BinDir 'knack.exe'
+& $knackExe --version
+
+# Register knack with the AI agent the user is running in (Claude Code,
+# Codex, Cursor, ...). Best-effort: if the detector finds nothing, it writes
+# the generic AGENTS.md fallback. Non-fatal — agent integration is a
+# courtesy, not a requirement for the CLI to work.
+try {
+    & $knackExe install --auto | Out-Null
+    Write-Host "[OK] registered with detected agent (re-run 'knack install' to refresh)"
+} catch {
+    Write-Host "  Tip: run 'knack install' to register the CLI with your AI agent."
+}
