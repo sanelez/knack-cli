@@ -39,6 +39,9 @@ futures-util.workspace = true
 bytes.workspace = true
 sha2.workspace = true
 hex.workspace = true
+tar.workspace = true
+flate2.workspace = true
+walkdir.workspace = true
 
 [dev-dependencies]
 wiremock.workspace = true

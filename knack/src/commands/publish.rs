@@ -1,5 +1,15 @@
 //! `knack publish <slug> [--major|--minor|--patch]` — push the local skill
-//! folder as a new version.
+//! folder as a new immutable version.
+//!
+//! V2a default flow: pack the entire folder (SKILL.md + meta.knack.yaml +
+//! optional scripts/ / assets/ / references/ / examples/ / tests/ /
+//! intuition.md) into a deterministic gzip tarball, presign-upload to R2,
+//! PUT the bytes, then POST the version with packed_s3_key set. The server
+//! derives skill_md / intuition_md / meta_yaml from the bundle so the text
+//! columns and the tarball stay in lockstep.
+//!
+//! Legacy fallback: if the server doesn't support the bundle endpoints (a
+//! pre-V2a deployment), we send the three text fields as before.
 
 use std::path::{Path, PathBuf};
 
@@ -8,7 +18,8 @@ use serde_json::json;
 
 use crate::api::{skills as api_skills, ApiClient};
 use crate::errors::{CliError, CliResult};
-use crate::output::{emit_err, emit_ok, OutputMode};
+use crate::output::{chatter, emit_err, emit_ok, OutputMode};
+use crate::skill_pack::pack_skill;
 
 #[derive(Debug, Args)]
 pub struct PublishArgs {
@@ -36,9 +47,17 @@ pub async fn run(args: PublishArgs, client: ApiClient, mode: OutputMode) -> CliR
         .clone()
         .unwrap_or_else(|| client.config.skills_dir.join(&args.slug));
 
-    let skill_md = read_required(&dir.join("SKILL.md"))?;
-    let intuition_md = read_optional(&dir.join("intuition.md"));
-    let meta_yaml = read_optional(&dir.join("meta.knack.yaml"));
+    if !dir.is_dir() {
+        let err = CliError::User {
+            code: "PUBLISH_NO_FOLDER".into(),
+            message: format!("not a directory: {}", dir.display()),
+            hint: Some(
+                "pass --from <dir> with a folder containing SKILL.md".into(),
+            ),
+        };
+        emit_err(mode, &err);
+        return Err(err);
+    }
 
     let skill = match api_skills::find_by_slug(&client, &args.slug).await? {
         Some(s) => s,
@@ -64,19 +83,48 @@ pub async fn run(args: PublishArgs, client: ApiClient, mode: OutputMode) -> CliR
     };
 
     let parent_id = skill.current_version_id.clone();
-    let new_version = api_skills::create_version(
-        &client,
-        &skill.id,
-        &api_skills::SkillVersionCreate {
-            version: next.clone(),
-            skill_md,
-            intuition_md,
-            meta_yaml,
-            parent_version_id: parent_id.clone(),
-            artifact_ids: vec![],
-        },
+
+    // V2a bundle path: pack the folder, presign-upload, PUT, POST with
+    // packed_s3_key. If the server is pre-V2a (404 on presign-bundle), fall
+    // back to the legacy three-text-field path so an old API still works.
+    let bundle_outcome = match try_publish_with_bundle(
+        &client, &skill.id, &next, parent_id.as_deref(), &dir,
     )
-    .await?;
+    .await
+    {
+        Ok(v) => PublishOutcome::Bundle(v),
+        Err(CliError::NotFound(msg)) if msg.contains("presign-bundle") => {
+            chatter(
+                mode,
+                "Server lacks bundle endpoints; falling back to legacy text fields.",
+            );
+            PublishOutcome::Legacy
+        }
+        Err(e) => return Err(e),
+    };
+
+    let new_version = match bundle_outcome {
+        PublishOutcome::Bundle(v) => v,
+        PublishOutcome::Legacy => {
+            let skill_md = read_required(&dir.join("SKILL.md"))?;
+            let intuition_md = read_optional(&dir.join("intuition.md"));
+            let meta_yaml = read_optional(&dir.join("meta.knack.yaml"));
+            api_skills::create_version(
+                &client,
+                &skill.id,
+                &api_skills::SkillVersionCreate {
+                    version: next.clone(),
+                    skill_md,
+                    intuition_md,
+                    meta_yaml,
+                    parent_version_id: parent_id.clone(),
+                    artifact_ids: vec![],
+                    packed_s3_key: None,
+                },
+            )
+            .await?
+        }
+    };
 
     emit_ok(
         mode,
@@ -85,12 +133,65 @@ pub async fn run(args: PublishArgs, client: ApiClient, mode: OutputMode) -> CliR
             "skill_id": skill.id,
             "version": new_version.version,
             "parent_version_id": parent_id,
+            "packed_s3_key": new_version.packed_s3_key,
             "from": dir,
         }),
         || println!("✓ {}@{} published", args.slug, new_version.version),
     );
     Ok(())
 }
+
+enum PublishOutcome {
+    Bundle(api_skills::SkillVersion),
+    Legacy,
+}
+
+async fn try_publish_with_bundle(
+    client: &ApiClient,
+    skill_id: &str,
+    next_semver: &str,
+    parent_version_id: Option<&str>,
+    dir: &Path,
+) -> Result<api_skills::SkillVersion, CliError> {
+    let packed = pack_skill(dir)?;
+    let presign = api_skills::presign_bundle(client, skill_id).await?;
+
+    // PUT the tarball bytes to the presigned R2 URL. No auth header — the
+    // signature in the URL is the credential.
+    let put_status = reqwest::Client::new()
+        .put(&presign.upload_url)
+        .header("Content-Type", "application/gzip")
+        .body(packed.bytes)
+        .send()
+        .await?
+        .status();
+    if !put_status.is_success() {
+        return Err(CliError::Server {
+            status: put_status.as_u16(),
+            code: "BUNDLE_UPLOAD_FAILED".into(),
+            message: format!("R2 PUT returned {put_status}"),
+        });
+    }
+
+    let version = api_skills::create_version(
+        client,
+        skill_id,
+        &api_skills::SkillVersionCreate {
+            version: next_semver.to_string(),
+            skill_md: String::new(),
+            intuition_md: String::new(),
+            meta_yaml: String::new(),
+            parent_version_id: parent_version_id.map(str::to_string),
+            artifact_ids: vec![],
+            packed_s3_key: Some(presign.s3_key),
+        },
+    )
+    .await?;
+    Ok(version)
+}
+
+// Compatibility shim: pre-V2a publish helpers (used only by the legacy
+// fallback above and the older tests until they catch up).
 
 #[derive(Copy, Clone)]
 enum BumpKind {

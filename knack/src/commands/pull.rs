@@ -1,15 +1,16 @@
 //! `knack pull <slug>[@<semver>] [--target ./dir]` — write a skill to disk.
 //!
-//! Layout (matches spec § III):
+//! V2a default: if the SkillVersion has a `packed_s3_key`, download the
+//! tarball via the bundle endpoint and unpack the full Anthropic Agent
+//! Skills folder (SKILL.md + meta.knack.yaml + intuition.md + scripts/ +
+//! assets/ + references/ + examples/ + tests/) into the target directory.
 //!
-//! ```text
-//! <target>/<slug>/
-//!   SKILL.md
-//!   intuition.md
-//!   meta.knack.yaml
-//! ```
+//! Legacy fallback: pre-V2a versions store only three text columns and have
+//! no bundle. We write just `SKILL.md`, `intuition.md`, `meta.knack.yaml`
+//! into the target — matching the original layout.
 //!
-//! Idempotent: re-pulling overwrites only when content actually changed.
+//! Idempotent on the legacy path: re-pulling overwrites only when content
+//! actually changed.
 
 use std::path::PathBuf;
 
@@ -19,6 +20,7 @@ use serde_json::json;
 use crate::api::{skills as api_skills, ApiClient};
 use crate::errors::{CliError, CliResult};
 use crate::output::{chatter, emit_err, emit_ok, OutputMode};
+use crate::skill_pack::unpack_skill;
 
 #[derive(Debug, Args)]
 pub struct PullArgs {
@@ -73,23 +75,52 @@ pub async fn run(args: PullArgs, client: ApiClient, mode: OutputMode) -> CliResu
     let dir = target_root.join(&skill.slug);
     std::fs::create_dir_all(&dir)?;
 
-    let mut written = Vec::new();
-    written.extend(write_if_changed(&dir.join("SKILL.md"), &version.skill_md)?);
-    written.extend(write_if_changed(
-        &dir.join("intuition.md"),
-        &version.intuition_md,
-    )?);
-    written.extend(write_if_changed(
-        &dir.join("meta.knack.yaml"),
-        &version.meta_yaml,
-    )?);
+    // V2a: if the version was published with a packed bundle, download and
+    // unpack the whole folder. Legacy versions (packed_s3_key=None) take
+    // the three-text-field write path below.
+    let mode_label: &str;
+    let written: Vec<PathBuf>;
+    if version.packed_s3_key.is_some() {
+        let dl = api_skills::bundle_download(&client, &skill.id, &version.version).await?;
+        let resp = reqwest::Client::new().get(&dl.url).send().await?;
+        if !resp.status().is_success() {
+            let status = resp.status();
+            return Err(CliError::Server {
+                status: status.as_u16(),
+                code: "BUNDLE_DOWNLOAD_FAILED".into(),
+                message: format!("R2 GET returned {status}"),
+            });
+        }
+        let bytes = resp.bytes().await?;
+        let manifest = unpack_skill(&bytes, &dir)?;
+        written = manifest
+            .files
+            .keys()
+            .map(|arcname| dir.join(arcname.replace('/', std::path::MAIN_SEPARATOR_STR)))
+            .collect();
+        mode_label = "bundle";
+    } else {
+        let mut acc = Vec::new();
+        acc.extend(write_if_changed(&dir.join("SKILL.md"), &version.skill_md)?);
+        acc.extend(write_if_changed(
+            &dir.join("intuition.md"),
+            &version.intuition_md,
+        )?);
+        acc.extend(write_if_changed(
+            &dir.join("meta.knack.yaml"),
+            &version.meta_yaml,
+        )?);
+        written = acc;
+        mode_label = "legacy";
+    }
 
     chatter(
         mode,
         format!(
-            "pulled {}@{} → {}",
+            "pulled {}@{} ({}) → {}",
             skill.slug,
             version.version,
+            mode_label,
             dir.display()
         ),
     );
@@ -102,6 +133,7 @@ pub async fn run(args: PullArgs, client: ApiClient, mode: OutputMode) -> CliResu
             "version": version.version,
             "path": dir,
             "files_written": written,
+            "mode": mode_label,
         }),
         || {
             println!("✓ {}@{} → {}", skill.slug, version.version, dir.display());
