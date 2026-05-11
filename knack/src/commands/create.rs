@@ -62,7 +62,8 @@ pub async fn run(args: CreateArgs, client: ApiClient, mode: OutputMode) -> CliRe
         || {
             println!("✓ created {} (id: {})", skill.slug, skill.id);
             println!(
-                "next: write SKILL.md and intuition.md, then run `knack publish {} --from <dir>`",
+                "next: write SKILL.md (rules go in its ## Intuition section), \
+                 then run `knack publish {} --from <dir>`",
                 skill.slug,
             );
         },
