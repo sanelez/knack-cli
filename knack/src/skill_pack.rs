@@ -34,7 +34,7 @@ const REQUIRED_FILES: &[&str] = &["SKILL.md", "meta.knack.yaml"];
 const OPTIONAL_FILES: &[&str] = &["intuition.md"];
 const OPTIONAL_DIRS: &[&str] = &["tests", "examples", "scripts", "assets", "references"];
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Manifest {
     pub version: u32,
     /// Map of `arcname` (POSIX-style relative path) -> hex sha256.
@@ -52,6 +52,7 @@ impl Manifest {
     }
 }
 
+#[derive(Debug, Clone)]
 pub struct PackedSkill {
     pub bytes: Vec<u8>,
     pub manifest: Manifest,
