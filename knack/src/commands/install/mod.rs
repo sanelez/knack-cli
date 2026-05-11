@@ -169,13 +169,7 @@ fn run_uninstall(mode: OutputMode) -> CliResult<()> {
             continue;
         };
         let did = match t.style {
-            ConfigStyle::WriteFile => {
-                if path.exists() && std::fs::remove_file(&path).is_ok() {
-                    true
-                } else {
-                    false
-                }
-            }
+            ConfigStyle::WriteFile => path.exists() && std::fs::remove_file(&path).is_ok(),
             ConfigStyle::AppendBlock => block::remove(&path).unwrap_or(false),
         };
         if did {
@@ -223,6 +217,59 @@ fn render_body(target: &AgentTarget) -> String {
             SNIPPET.trim_end_matches('\n')
         ),
         ConfigStyle::AppendBlock => SNIPPET.trim_end_matches('\n').to_string(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn apply_dry_run_returns_dryrun_status_for_each_target() {
+        let claude = targets::find("claude").expect("claude target registered");
+        let outcomes = apply(&[claude], true);
+        assert_eq!(outcomes.len(), 1);
+        assert!(matches!(outcomes[0].status, Status::DryRun));
+        // Body is rendered so the user can review what would land.
+        assert!(outcomes[0].body.contains("knack list"));
+        assert!(outcomes[0].body.contains("knack info"));
+    }
+
+    #[test]
+    fn render_body_writefile_has_mdc_frontmatter() {
+        let cursor = targets::find("cursor").expect("cursor target registered");
+        assert_eq!(cursor.style, ConfigStyle::WriteFile);
+        let body = render_body(cursor);
+        assert!(body.starts_with("---\n"));
+        assert!(body.contains("alwaysApply: true"));
+        assert!(body.contains("knack info"));
+    }
+
+    #[test]
+    fn render_body_appendblock_has_no_frontmatter() {
+        let claude = targets::find("claude").expect("claude target registered");
+        assert_eq!(claude.style, ConfigStyle::AppendBlock);
+        let body = render_body(claude);
+        assert!(!body.starts_with("---\n"));
+        assert!(body.contains("knack info"));
+    }
+
+    #[test]
+    fn targets_find_returns_none_for_unknown() {
+        assert!(targets::find("not-a-real-agent").is_none());
+        assert!(targets::find("claude").is_some());
+        assert!(targets::find("generic").is_some());
+    }
+
+    #[test]
+    fn target_names_includes_every_planned_agent() {
+        let names = targets::names();
+        for required in [
+            "claude", "codex", "cursor", "aider", "gemini", "opencode", "factory", "amp",
+            "generic",
+        ] {
+            assert!(names.contains(&required), "missing target: {required}");
+        }
     }
 }
 
