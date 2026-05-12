@@ -1,15 +1,22 @@
 //! `knack create <slug> --name "..."` — bootstrap a new skill shell.
 //!
 //! Hits `POST /skills` to register a new slug + name + scope. Returns the
-//! generated skill id. After this, the caller writes SKILL.md / intuition.md
-//! to disk and runs `knack publish <slug>` to push the first immutable
-//! version. Separating the two steps keeps each command single-purpose and
-//! makes the agent-driven flow easy to script.
+//! generated skill id.
+//!
+//! With `--scaffold <dir>` (the default if the flag is omitted but `--name` is
+//! present? No — explicit opt-in to avoid surprising existing scripts), also
+//! writes a complete starter folder: SKILL.md with frontmatter, meta.knack.yaml
+//! with the four required MetaKnack fields (id, name, slug, author), an
+//! intuition.md stub, and an empty examples/ dir. The agent can immediately
+//! `knack validate <dir>` + `knack publish <slug> --from <dir>` without
+//! having to know the meta schema.
+
+use std::path::{Path, PathBuf};
 
 use clap::Args;
 use serde_json::json;
 
-use crate::api::{skills as api_skills, ApiClient};
+use crate::api::{auth as api_auth, skills as api_skills, ApiClient};
 use crate::errors::{CliError, CliResult};
 use crate::output::{emit_err, emit_ok, OutputMode};
 
@@ -23,6 +30,10 @@ pub struct CreateArgs {
     #[arg(long)]
     pub name: String,
 
+    /// One-line description (1-280 chars). Optional; defaults to a stub.
+    #[arg(long)]
+    pub description: Option<String>,
+
     /// Visibility scope. Defaults to `personal`. `team` requires --team-id.
     #[arg(long, default_value = "personal")]
     pub scope: String,
@@ -30,6 +41,13 @@ pub struct CreateArgs {
     /// Team UUID (required when --scope team, forbidden otherwise).
     #[arg(long)]
     pub team_id: Option<String>,
+
+    /// Write a starter skill folder to this path (SKILL.md +
+    /// meta.knack.yaml + intuition.md + examples/). Recommended — the four
+    /// required meta.knack.yaml fields (id, name, slug, author) get filled
+    /// in automatically. Omit to register the slug API-side only.
+    #[arg(long)]
+    pub scaffold: Option<PathBuf>,
 }
 
 pub async fn run(args: CreateArgs, client: ApiClient, mode: OutputMode) -> CliResult<()> {
@@ -51,6 +69,29 @@ pub async fn run(args: CreateArgs, client: ApiClient, mode: OutputMode) -> CliRe
         }
     };
 
+    let mut scaffolded_path: Option<PathBuf> = None;
+    if let Some(dir) = &args.scaffold {
+        // Fetch the caller's email for the `author` field. We only block
+        // on this when scaffolding so the bare-create path stays one
+        // round-trip.
+        let me = match api_auth::me(&client).await {
+            Ok(m) => m,
+            Err(e) => {
+                emit_err(mode, &e);
+                return Err(e);
+            }
+        };
+        let desc = args
+            .description
+            .clone()
+            .unwrap_or_else(|| format!("{} — describe what it does in one line.", args.name));
+        if let Err(e) = write_scaffold(dir, &skill.id, &args.slug, &args.name, &desc, &me.email) {
+            emit_err(mode, &e);
+            return Err(e);
+        }
+        scaffolded_path = Some(dir.clone());
+    }
+
     emit_ok(
         mode,
         json!({
@@ -58,17 +99,109 @@ pub async fn run(args: CreateArgs, client: ApiClient, mode: OutputMode) -> CliRe
             "skill_id": skill.id,
             "scope": skill.scope,
             "name": skill.name,
+            "scaffold": scaffolded_path.as_ref().map(|p| p.display().to_string()),
         }),
         || {
             println!("✓ created {} (id: {})", skill.slug, skill.id);
-            println!(
-                "next: write SKILL.md (rules go in its ## Intuition section), \
-                 then run `knack publish {} --from <dir>`",
-                skill.slug,
-            );
+            match &scaffolded_path {
+                Some(p) => {
+                    println!("  scaffolded → {}", p.display());
+                    println!(
+                        "next: edit SKILL.md (the body of your skill), then \
+                         `knack validate {}` + `knack publish {} --from {}`",
+                        p.display(),
+                        skill.slug,
+                        p.display(),
+                    );
+                }
+                None => println!(
+                    "next: write SKILL.md (rules go in its ## Intuition section), \
+                     then `knack publish {} --from <dir>`. \
+                     Tip: pass --scaffold ./<dir> next time to skip the boilerplate.",
+                    skill.slug,
+                ),
+            }
         },
     );
     Ok(())
+}
+
+/// Write a complete starter folder. Files mirror the canonical Knack skill
+/// layout so `knack validate` + `knack publish --from` work immediately.
+fn write_scaffold(
+    dir: &Path,
+    skill_id: &str,
+    slug: &str,
+    name: &str,
+    description: &str,
+    author_email: &str,
+) -> Result<(), CliError> {
+    if dir.exists() && dir.read_dir().map(|mut i| i.next().is_some()).unwrap_or(false) {
+        return Err(CliError::User {
+            code: "CREATE_SCAFFOLD_DIR_NOT_EMPTY".into(),
+            message: format!("scaffold target {} is not empty", dir.display()),
+            hint: Some("pass a fresh path or remove the existing contents first".into()),
+        });
+    }
+    std::fs::create_dir_all(dir).map_err(io)?;
+    std::fs::create_dir_all(dir.join("examples")).map_err(io)?;
+
+    let skill_md = render_skill_md(name, description);
+    let meta_yaml = render_meta_yaml(skill_id, name, slug, author_email);
+    let intuition_md = render_intuition_md();
+    let examples_readme = render_examples_readme();
+
+    std::fs::write(dir.join("SKILL.md"), skill_md).map_err(io)?;
+    std::fs::write(dir.join("meta.knack.yaml"), meta_yaml).map_err(io)?;
+    std::fs::write(dir.join("intuition.md"), intuition_md).map_err(io)?;
+    std::fs::write(dir.join("examples").join("README.md"), examples_readme).map_err(io)?;
+    Ok(())
+}
+
+fn render_skill_md(name: &str, description: &str) -> String {
+    format!(
+        "---\nname: {name}\ndescription: {description}\n---\n\n\
+         # How to do it\n\n\
+         Replace this with the step-by-step procedure. Keep it concrete.\n\n\
+         # Intuition\n\n\
+         Replace this with the judgment calls and edge cases that make this skill \
+         non-obvious. See intuition.md for the long-form scenario list.\n\n\
+         # Definition of done\n\n\
+         Replace this with the criteria that say the work is finished.\n"
+    )
+}
+
+fn render_meta_yaml(skill_id: &str, name: &str, slug: &str, author: &str) -> String {
+    // Hand-written — meta.knack.yaml is short (~4 lines) so a yaml library
+    // would be overkill here. Quote the name to be safe against colons.
+    format!(
+        "id: {skill_id}\n\
+         name: \"{name}\"\n\
+         slug: {slug}\n\
+         author: {author}\n"
+    )
+}
+
+fn render_intuition_md() -> String {
+    "## Scenarios\n\n\
+     - Replace each bullet with a realistic case the skill needs to handle.\n\
+     - The more specific and unusual, the better — these become the test cases.\n"
+        .to_string()
+}
+
+fn render_examples_readme() -> String {
+    "# Examples\n\n\
+     Drop input/output pairs here. They get bundled with the skill and the \
+     conductor uses them as few-shot anchors.\n"
+        .to_string()
+}
+
+fn io(e: std::io::Error) -> CliError {
+    CliError::User {
+        code: "CREATE_SCAFFOLD_IO".into(),
+        message: format!("scaffold write failed: {e}"),
+        hint: None,
+    }
 }
 
 fn validate_slug(slug: &str) -> CliResult<()> {
@@ -183,5 +316,58 @@ mod tests {
     #[test]
     fn scope_rejects_unknown() {
         assert!(validate_scope("private", None).is_err());
+    }
+
+    #[test]
+    fn scaffold_writes_all_four_required_files() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("skill");
+        write_scaffold(
+            &dir,
+            "skill-id-abc",
+            "humanizetext",
+            "Humanize Text",
+            "Rewrite AI prose",
+            "user@example.com",
+        )
+        .unwrap();
+        assert!(dir.join("SKILL.md").exists());
+        assert!(dir.join("meta.knack.yaml").exists());
+        assert!(dir.join("intuition.md").exists());
+        assert!(dir.join("examples").join("README.md").exists());
+
+        let meta = std::fs::read_to_string(dir.join("meta.knack.yaml")).unwrap();
+        // Four required MetaKnack fields all present.
+        assert!(meta.contains("id: skill-id-abc"));
+        assert!(meta.contains("name: \"Humanize Text\""));
+        assert!(meta.contains("slug: humanizetext"));
+        assert!(meta.contains("author: user@example.com"));
+
+        let skill_md = std::fs::read_to_string(dir.join("SKILL.md")).unwrap();
+        // Frontmatter present with name + description (server requires these).
+        assert!(skill_md.starts_with("---\n"));
+        assert!(skill_md.contains("name: Humanize Text"));
+        assert!(skill_md.contains("description: Rewrite AI prose"));
+    }
+
+    #[test]
+    fn scaffold_rejects_non_empty_target() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("skill");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("existing.txt"), "stuff").unwrap();
+        let err = write_scaffold(
+            &dir,
+            "id",
+            "slug",
+            "Name",
+            "desc",
+            "u@example.com",
+        )
+        .unwrap_err();
+        match err {
+            CliError::User { code, .. } => assert_eq!(code, "CREATE_SCAFFOLD_DIR_NOT_EMPTY"),
+            other => panic!("expected User error, got {other:?}"),
+        }
     }
 }
