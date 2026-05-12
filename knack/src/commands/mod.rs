@@ -15,6 +15,7 @@ pub mod mark;
 pub mod publish;
 pub mod pull;
 pub mod run;
+pub mod username;
 pub mod validate;
 
 use std::sync::Arc;
@@ -81,6 +82,9 @@ pub enum Command {
     /// Local pre-flight check on a skill folder. Catches missing required
     /// meta.knack.yaml / SKILL.md fields before you pay a publish round-trip.
     Validate(validate::ValidateArgs),
+
+    /// Claim a marketplace username (one-time). Required to publish public skills.
+    Username(username::UsernameArgs),
 }
 
 /// Cross-cutting flags every subcommand inherits.
@@ -146,5 +150,6 @@ pub async fn dispatch(cmd: Command, client: ApiClient, mode: OutputMode) -> CliR
         Command::Install(a) => install::run(a, mode),
         Command::Info(a) => info::run(a, mode).await,
         Command::Validate(a) => validate::run(a, mode),
+        Command::Username(a) => username::run(a, client, mode).await,
     }
 }

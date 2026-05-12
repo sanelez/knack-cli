@@ -11,6 +11,7 @@
 pub mod auth;
 pub mod runs;
 pub mod skills;
+pub mod users;
 
 use std::sync::Arc;
 
