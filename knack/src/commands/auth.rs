@@ -302,12 +302,32 @@ async fn status(client: ApiClient, mode: OutputMode) -> CliResult<()> {
         emit_err(mode, &err);
         return Err(err);
     }
-    // Read the access_token's `exp` claim. We trust our own keyring entry —
-    // no signature check needed here, and avoiding that means we don't have
-    // to embed the server's HS256 secret in the CLI.
-    let expires_in_secs = stored
-        .as_ref()
-        .and_then(|t| jwt_exp_seconds_from_now(&t.access_token));
+
+    // Bearer-override (KNACK_AUTH_TOKEN / --auth-token) bypasses the keyring
+    // entirely, so any expiry we'd compute from `stored` doesn't describe
+    // the credential actually authenticating the request. Surface that
+    // explicitly instead of showing a misleading "valid for Xd" from a
+    // stale JWT we happen to have in the keyring.
+    let bearer_source = if let Some(t) = &client.bearer_override {
+        Some(if t.starts_with("knack_pat_") {
+            BearerSource::Pat
+        } else {
+            BearerSource::EnvJwt
+        })
+    } else {
+        None
+    };
+
+    // Only decode the keyring JWT when it's actually the credential in
+    // play (no override active). Trust our own store — no signature check.
+    let expires_in_secs = if bearer_source.is_none() {
+        stored
+            .as_ref()
+            .and_then(|t| jwt_exp_seconds_from_now(&t.access_token))
+    } else {
+        None
+    };
+
     match api_auth::me(&client).await {
         Ok(me) => {
             emit_ok(
@@ -319,17 +339,39 @@ async fn status(client: ApiClient, mode: OutputMode) -> CliResult<()> {
                     "account": client.account,
                     "auth_method": me.auth_method,
                     "token_expires_in_seconds": expires_in_secs,
+                    "bearer_source": match bearer_source {
+                        Some(BearerSource::Pat) => "pat_env",
+                        Some(BearerSource::EnvJwt) => "jwt_env",
+                        None => "keyring",
+                    },
                 }),
                 || {
-                    let validity = match expires_in_secs {
-                        Some(s) if s > 0 => format!(", token valid for {}", human_duration(s)),
-                        Some(_) => ", token expired (refresh on next call)".into(),
-                        None => "".into(),
+                    let suffix = match bearer_source {
+                        Some(BearerSource::Pat) => {
+                            ", via personal access token (manage at \
+                             getknack.ai/settings#cli-tokens)".to_string()
+                        }
+                        Some(BearerSource::EnvJwt) => {
+                            ", via KNACK_AUTH_TOKEN env override".to_string()
+                        }
+                        None => match expires_in_secs {
+                            Some(s) if s > 0 => {
+                                format!(", token valid for {}", human_duration(s))
+                            }
+                            Some(_) => ", token expired (refresh on next call)".into(),
+                            None => "".into(),
+                        },
                     };
-                    println!("{} ({}){}", me.email, me.plan, validity);
-                    if let Some(s) = expires_in_secs {
-                        if s > 0 && s < 86_400 {
-                            println!("    proactively refresh with `knack auth refresh`");
+                    println!("{} ({}){}", me.email, me.plan, suffix);
+                    // Only nudge for `knack auth refresh` when the keyring
+                    // is the credential. With an override there's nothing
+                    // to refresh on this side; the user manages the token
+                    // externally.
+                    if bearer_source.is_none() {
+                        if let Some(s) = expires_in_secs {
+                            if s > 0 && s < 86_400 {
+                                println!("    proactively refresh with `knack auth refresh`");
+                            }
                         }
                     }
                 },
@@ -341,6 +383,16 @@ async fn status(client: ApiClient, mode: OutputMode) -> CliResult<()> {
             Err(e)
         }
     }
+}
+
+#[derive(Debug, Clone, Copy)]
+enum BearerSource {
+    /// Token came from `KNACK_AUTH_TOKEN` / `--auth-token` and looks like
+    /// a Personal Access Token.
+    Pat,
+    /// Same source, but doesn't match the PAT prefix — assumed to be a
+    /// JWT pasted in for CI / testing.
+    EnvJwt,
 }
 
 async fn refresh(client: ApiClient, mode: OutputMode) -> CliResult<()> {
