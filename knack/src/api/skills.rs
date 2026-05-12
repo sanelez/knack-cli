@@ -283,6 +283,17 @@ pub struct SkillUpdate {
     pub scope: Option<String>,
 }
 
+/// Soft-delete a skill (server-side `DELETE /skills/{id}`). Owner-only.
+/// We deliberately do NOT expose this as a CLI command — deletion is a
+/// web-only surface so an agent can't accidentally nuke a published
+/// skill. This wrapper exists for tests + future scripted use cases.
+pub async fn delete(client: &ApiClient, skill_id: &str) -> Result<(), CliError> {
+    let path = format!("/skills/{skill_id}");
+    client
+        .send_empty(|c| c.request(Method::DELETE, &path))
+        .await
+}
+
 pub async fn update(
     client: &ApiClient,
     skill_id: &str,
