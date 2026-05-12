@@ -171,7 +171,7 @@ async fn me_endpoint_returns_user_info() {
             "id": "u1",
             "email": "jane@firm.com",
             "name": "Jane",
-            "plan": "pro",
+            "plan": "personal",
             "auth_method": "cli",
         })))
         .mount(&server)
@@ -179,5 +179,5 @@ async fn me_endpoint_returns_user_info() {
 
     let me = api_auth::me(&client).await.unwrap();
     assert_eq!(me.email, "jane@firm.com");
-    assert_eq!(me.plan, "pro");
+    assert_eq!(me.plan, "personal");
 }
