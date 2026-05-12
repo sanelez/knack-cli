@@ -27,10 +27,18 @@ pub struct PullArgs {
     /// Skill identifier — `<slug>` or `<slug>@<semver>`.
     pub slug_at_version: String,
 
-    /// Output directory (default `~/.knack/skills/`). The skill is written
-    /// into a `<slug>/` subdirectory underneath.
+    /// Override the output base directory. The skill is written into a
+    /// ``<slug>/`` subdirectory underneath. Default: nearest workspace's
+    /// ``.knack/skills/`` (walking up from cwd), or ``./.knack/skills/``
+    /// if no workspace ancestor exists.
     #[arg(long)]
     pub target: Option<PathBuf>,
+
+    /// Write into the HOME-shared ``~/.knack/skills/`` pool instead of
+    /// a workspace-local ``.knack/skills/``. Use this when you want a
+    /// single skills pool shared across every project on this machine.
+    #[arg(long)]
+    pub global: bool,
 }
 
 pub async fn run(args: PullArgs, client: ApiClient, mode: OutputMode) -> CliResult<()> {
@@ -69,9 +77,16 @@ pub async fn run(args: PullArgs, client: ApiClient, mode: OutputMode) -> CliResu
         }
     };
 
-    let target_root = args
-        .target
-        .unwrap_or_else(|| client.config.skills_dir.clone());
+    // Workspace-local default: walk up from cwd looking for a `.knack/`,
+    // fall back to creating one in cwd. `--global` opts back into the
+    // HOME-shared pool; `--target` overrides everything.
+    let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    let target_root = crate::workspace::resolve_skills_root(
+        &cwd,
+        args.global,
+        args.target.as_deref(),
+        &client.config.skills_dir,
+    );
     let dir = target_root.join(&skill.slug);
     std::fs::create_dir_all(&dir)?;
 

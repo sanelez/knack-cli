@@ -42,12 +42,25 @@ pub struct CreateArgs {
     #[arg(long)]
     pub team_id: Option<String>,
 
-    /// Write a starter skill folder to this path (SKILL.md +
-    /// meta.knack.yaml + intuition.md + examples/). Recommended — the four
-    /// required meta.knack.yaml fields (id, name, slug, author) get filled
-    /// in automatically. Omit to register the slug API-side only.
+    /// Override the scaffold target. Default: nearest workspace's
+    /// ``.knack/drafts/<slug>/``, falling back to ``./.knack/drafts/<slug>/``
+    /// when no workspace exists in the ancestor chain.
     #[arg(long)]
     pub scaffold: Option<PathBuf>,
+
+    /// Skip the local scaffold and only register the slug API-side. The
+    /// inverse of the old opt-in behavior — by default we always write
+    /// a starter folder because the four required ``meta.knack.yaml``
+    /// fields (id, name, slug, author) are easier to fill from a
+    /// template than from memory.
+    #[arg(long)]
+    pub no_scaffold: bool,
+
+    /// Scaffold into ``~/.knack/drafts/<slug>/`` (HOME-shared) instead
+    /// of the workspace-local default. Pairs with ``knack pull --global``
+    /// for users who prefer one global pool over per-project layouts.
+    #[arg(long)]
+    pub global: bool,
 }
 
 pub async fn run(args: CreateArgs, client: ApiClient, mode: OutputMode) -> CliResult<()> {
@@ -70,7 +83,27 @@ pub async fn run(args: CreateArgs, client: ApiClient, mode: OutputMode) -> CliRe
     };
 
     let mut scaffolded_path: Option<PathBuf> = None;
-    if let Some(dir) = &args.scaffold {
+    if !args.no_scaffold {
+        // Default target: <workspace>/.knack/drafts/<slug>/. `--scaffold`
+        // overrides; `--global` flips to ~/.knack/drafts/<slug>/. The
+        // workspace gets created lazily on first write so users don't
+        // have to remember `knack init` first.
+        let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+        let drafts_root = crate::workspace::resolve_drafts_root(
+            &cwd,
+            args.global,
+            args.scaffold.as_deref(),
+            &client.config.skills_dir,
+        );
+        // If --scaffold gave a literal target we treat it as the FINAL
+        // dir; otherwise we append <slug> so multiple drafts can
+        // coexist under one drafts/ root.
+        let dir = if args.scaffold.is_some() {
+            drafts_root
+        } else {
+            drafts_root.join(&args.slug)
+        };
+
         // Fetch the caller's email for the `author` field. We only block
         // on this when scaffolding so the bare-create path stays one
         // round-trip.
@@ -85,11 +118,11 @@ pub async fn run(args: CreateArgs, client: ApiClient, mode: OutputMode) -> CliRe
             .description
             .clone()
             .unwrap_or_else(|| format!("{} — describe what it does in one line.", args.name));
-        if let Err(e) = write_scaffold(dir, &skill.id, &args.slug, &args.name, &desc, &me.email) {
+        if let Err(e) = write_scaffold(&dir, &skill.id, &args.slug, &args.name, &desc, &me.email) {
             emit_err(mode, &e);
             return Err(e);
         }
-        scaffolded_path = Some(dir.clone());
+        scaffolded_path = Some(dir);
     }
 
     emit_ok(

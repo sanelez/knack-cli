@@ -8,6 +8,7 @@ pub mod diff;
 pub mod docs;
 pub mod edit;
 pub mod info;
+pub mod init;
 pub mod install;
 pub mod introspect;
 pub mod list;
@@ -78,6 +79,9 @@ pub enum Command {
 
     /// Register knack with the AI agent on this machine (Claude Code, Codex, Cursor, ...)
     Install(install::InstallArgs),
+
+    /// Scaffold a workspace-local `.knack/` (skills/, drafts/, .gitignore, README).
+    Init(init::InitArgs),
 
     /// Print the canonical Knack agent playbook (agent.txt). Offline-fallback bundled.
     Info(info::InfoArgs),
@@ -161,6 +165,7 @@ pub async fn dispatch(cmd: Command, client: ApiClient, mode: OutputMode) -> CliR
         Command::Completions(a) => completions::run(a, mode),
         Command::Debug(a) => debug::run(a, client, mode),
         Command::Install(a) => install::run(a, mode),
+        Command::Init(a) => init::run(a, mode),
         Command::Info(a) => info::run(a, mode).await,
         Command::Validate(a) => validate::run(a, mode),
         Command::Username(a) => username::run(a, client, mode).await,

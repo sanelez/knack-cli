@@ -4,9 +4,21 @@ The `knack` CLI is installed on this machine and is your portable skill
 manager. It speaks the open Anthropic Skills format (SKILL.md plus
 assets).
 
-- Discover skills available to the user: `knack list`
-- Pull a skill into the current workspace: `knack pull <slug>`
-- Run an installed skill against a task: `knack run <slug>`
+Workspace layout (per-project, not HOME-global):
+
+    .knack/skills/<slug>/     pulled skills (read)
+    .knack/drafts/<slug>/     in-progress authoring (write)
+
+Each project gets its own `.knack/` directory. Running `knack pull` or
+`knack create` walks up the tree git-style to find one and creates it
+in cwd if none exists. `knack init` is the explicit version.
+
+Core commands:
+
+- Set up a workspace: `knack init`
+- Discover skills available to the user: `knack list` / `knack search <query>`
+- Pull a skill into the workspace: `knack pull @<author>/<slug>` (or just `<slug>` for your own)
+- Run a pulled skill against a task: `knack run <slug>`
 - Author a new skill from a user conversation: see the playbook below.
 - Authenticate once per machine: `knack auth login`
 

@@ -25,7 +25,11 @@ use crate::skill_pack::pack_skill;
 pub struct PublishArgs {
     pub slug: String,
 
-    /// Folder containing SKILL.md (default: `~/.knack/skills/<slug>/`).
+    /// Folder containing SKILL.md. Default resolution order, first hit:
+    ///   1. nearest workspace's ``.knack/drafts/<slug>/``
+    ///   2. nearest workspace's ``.knack/skills/<slug>/``
+    ///   3. legacy HOME pool ``~/.knack/skills/<slug>/``
+    /// Pass ``--from <path>`` to override.
     #[arg(long)]
     pub from: Option<PathBuf>,
 
@@ -48,10 +52,23 @@ pub struct PublishArgs {
 }
 
 pub async fn run(args: PublishArgs, client: ApiClient, mode: OutputMode) -> CliResult<()> {
-    let dir = args
-        .from
-        .clone()
-        .unwrap_or_else(|| client.config.skills_dir.join(&args.slug));
+    let dir = match args.from.clone() {
+        Some(p) => p,
+        None => {
+            // Walk drafts/ → skills/ → HOME. Drafts wins because it's
+            // where `knack create` parks scaffolded works-in-progress;
+            // re-publishing a pulled skill (fork-style) is the rarer
+            // second path; the legacy HOME pool only matters for
+            // ~/.knack/skills/ users who haven't migrated.
+            let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+            crate::workspace::resolve_existing_skill_dir(
+                &args.slug,
+                &cwd,
+                &client.config.skills_dir,
+            )
+            .unwrap_or_else(|| client.config.skills_dir.join(&args.slug))
+        }
+    };
 
     if !dir.is_dir() {
         let err = CliError::User {

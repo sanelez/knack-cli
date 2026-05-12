@@ -12,3 +12,4 @@ pub mod output;
 pub mod skill_pack;
 pub mod skill_validators;
 pub mod slug;
+pub mod workspace;
