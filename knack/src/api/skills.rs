@@ -131,20 +131,18 @@ pub async fn get(client: &ApiClient, skill_id: &str) -> Result<Skill, CliError> 
 
 /// Find a skill by slug. Two paths:
 ///
-///   * `@author/slug` — calls `GET /skills/resolve` (anonymous endpoint).
-///     This is the marketplace path; works for public skills you don't own.
+///   * `@author/slug` — calls the anonymous marketplace detail endpoint.
+///     Works for public skills regardless of whether the caller is signed
+///     in.
 ///   * bare `slug` — scans the caller's accessible skills (personal + team).
-///     Kept for the "pull my own draft" workflow; bounded by the user's
-///     own library size, not the marketplace.
+///     Requires auth; bounded by the user's own library size.
 pub async fn find_by_slug(client: &ApiClient, slug: &str) -> Result<Option<Skill>, CliError> {
     if let Some((author, slug_only)) = parse_handle_slug(slug) {
-        let resolved = match resolve(client, &author, &slug_only).await {
-            Ok(r) => r,
-            Err(CliError::NotFound(_)) => return Ok(None),
-            Err(e) => return Err(e),
+        return match marketplace_detail(client, &author, &slug_only).await {
+            Ok(detail) => Ok(Some(detail.into_skill())),
+            Err(CliError::NotFound(_)) => Ok(None),
+            Err(e) => Err(e),
         };
-        let skill = get(client, &resolved.skill_id).await?;
-        return Ok(Some(skill));
     }
 
     let mut cursor: Option<String> = None;
@@ -162,6 +160,60 @@ pub async fn find_by_slug(client: &ApiClient, slug: &str) -> Result<Option<Skill
     }
 }
 
+/// Subset of the marketplace detail shape needed for the CLI pull
+/// path. Server-side fields like ratings and full markdown are
+/// ignored — we only care about the skill_id + current version so
+/// the existing `get_version` + bundle-download flow can run.
+#[derive(Debug, Clone, Deserialize)]
+struct MarketplaceDetail {
+    id: String,
+    slug: String,
+    name: String,
+    #[serde(default)]
+    description: String,
+    author: MarketplaceAuthor,
+    current_version_id: Option<String>,
+    current_version_semver: Option<String>,
+    published_at: Option<DateTime<Utc>>,
+    created_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct MarketplaceAuthor {
+    username: String,
+}
+
+impl MarketplaceDetail {
+    fn into_skill(self) -> Skill {
+        Skill {
+            id: self.id,
+            slug: self.slug,
+            name: self.name,
+            description: self.description,
+            scope: "public".to_string(),
+            owner_user_id: None,
+            owner_team_id: None,
+            owner_username: Some(self.author.username),
+            current_version_id: self.current_version_id,
+            current_version_semver: self.current_version_semver,
+            published_at: self.published_at,
+            created_at: self.created_at,
+        }
+    }
+}
+
+async fn marketplace_detail(
+    client: &ApiClient,
+    author: &str,
+    slug: &str,
+) -> Result<MarketplaceDetail, CliError> {
+    let handle = author.trim_start_matches('@');
+    let path = format!("/marketplace/@{}/{}", handle, slug);
+    client
+        .send_json::<MarketplaceDetail>(|c| c.request(Method::GET, &path))
+        .await
+}
+
 /// Parse `@author/slug` (or `author/slug`) into its parts. Returns `None`
 /// for bare-slug inputs so callers fall through to the legacy scan path.
 pub fn parse_handle_slug(input: &str) -> Option<(String, String)> {
@@ -174,7 +226,10 @@ pub fn parse_handle_slug(input: &str) -> Option<(String, String)> {
 }
 
 /// Resolve `@author/slug` to a public skill row via the marketplace
-/// resolver endpoint. No auth required.
+/// resolver endpoint. No auth required. Reserved for Phase 2
+/// (``knack search``) — the pull path uses the richer
+/// ``/marketplace/@user/slug`` detail endpoint instead.
+#[allow(dead_code)]
 pub async fn resolve(
     client: &ApiClient,
     author: &str,
