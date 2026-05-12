@@ -82,9 +82,15 @@ fn map_api_error_bytes(status: StatusCode, bytes: Option<&[u8]>) -> CliError {
     )
 }
 
-/// Render a `details` value into a short user-facing summary. Recognizes the
-/// `{"issues": [{"path", "message"}]}` shape produced by SKILL_FORMAT_INVALID
-/// and VALIDATION_ERROR; falls back to compact JSON for anything else.
+/// Render a `details` value into a short user-facing summary. Recognizes:
+///
+///   - `{"issues": [{"path", "message"}]}` — SKILL_FORMAT_INVALID, VALIDATION_ERROR.
+///   - `{"field", "got", "expected", "hint"}` — META_MISMATCH and other
+///     identity-cross-check 409s where the actionable info is the diff
+///     between what the file said and what the URL said.
+///
+/// Falls back to no summary for anything else (the headline message has to
+/// stand on its own in that case).
 fn format_details(details: Option<&Value>) -> Option<String> {
     let details = details?;
     if let Some(issues) = details.get("issues").and_then(|v| v.as_array()) {
@@ -110,6 +116,33 @@ fn format_details(details: Option<&Value>) -> Option<String> {
         }
         return Some(format!("issues: {}", parts.join("; ")));
     }
+
+    // META_MISMATCH-style payloads: server told us which field mismatched
+    // and what value was expected vs received. Inline both so the agent can
+    // see exactly what to fix without re-reading the spec.
+    let field = details.get("field").and_then(|v| v.as_str());
+    let got = details.get("got").and_then(|v| v.as_str());
+    let expected = details.get("expected").and_then(|v| v.as_str());
+    let hint = details.get("hint").and_then(|v| v.as_str());
+    if field.is_some() || got.is_some() || expected.is_some() || hint.is_some() {
+        let mut parts: Vec<String> = Vec::new();
+        if let Some(f) = field {
+            parts.push(format!("field: {f}"));
+        }
+        if let Some(g) = got {
+            parts.push(format!("got: {g}"));
+        }
+        if let Some(e) = expected {
+            parts.push(format!("expected: {e}"));
+        }
+        if let Some(h) = hint {
+            parts.push(format!("hint: {h}"));
+        }
+        if !parts.is_empty() {
+            return Some(parts.join(" · "));
+        }
+    }
+
     None
 }
 

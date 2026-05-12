@@ -1,10 +1,14 @@
-//! `knack mark <run_id> --status=… [--note=…]` — close the agent loop.
+//! `knack mark <run_id> <succeeded|failed> [--note=…]` — close the agent loop.
+//!
+//! `status` is positional now (matches the form agent.txt teaches). The
+//! legacy `--status=` flag is still accepted as a deprecated synonym so
+//! anyone scripting the old form keeps working.
 
 use clap::Args;
 use serde_json::json;
 
 use crate::api::{runs as api_runs, ApiClient};
-use crate::errors::CliResult;
+use crate::errors::{CliError, CliResult};
 use crate::output::{emit_err, emit_ok, OutputMode};
 
 #[derive(Debug, Args)]
@@ -12,12 +16,19 @@ pub struct MarkArgs {
     /// Run id (UUID) — `knack run` prints it on every invocation.
     pub run_id: String,
 
-    /// Outcome.
-    #[arg(long, value_parser = ["succeeded", "failed"])]
-    pub status: String,
+    /// Outcome. Positional — preferred form: `knack mark <run-id> succeeded`.
+    /// Optional here because `--status=` is also accepted for backward compat;
+    /// at runtime we require exactly one of the two forms.
+    #[arg(value_parser = ["succeeded", "failed"])]
+    pub outcome: Option<String>,
 
-    /// Free-form note. For `--status=failed`, the skill author gets notified
-    /// with this text — be specific.
+    /// Legacy: `--status=succeeded|failed`. Prefer the positional form.
+    /// Hidden from --help so new users see the positional form first.
+    #[arg(long = "status", value_parser = ["succeeded", "failed"], hide = true, conflicts_with = "outcome")]
+    pub status_flag: Option<String>,
+
+    /// Free-form note. For `failed`, the skill author gets notified with this
+    /// text — be specific.
     #[arg(long)]
     pub note: Option<String>,
 
@@ -27,12 +38,25 @@ pub struct MarkArgs {
 }
 
 pub async fn run(args: MarkArgs, client: ApiClient, mode: OutputMode) -> CliResult<()> {
+    let status = match args.outcome.or(args.status_flag) {
+        Some(s) => s,
+        None => {
+            let err = CliError::User {
+                code: "MARK_MISSING_STATUS".into(),
+                message: "missing status".into(),
+                hint: Some("knack mark <run-id> succeeded   (or `failed`)".into()),
+            };
+            emit_err(mode, &err);
+            return Err(err);
+        }
+    };
+
     let note = args.note.or(args.reason);
     let result = api_runs::mark(
         &client,
         &args.run_id,
         &api_runs::RunMarkBody {
-            status: args.status.clone(),
+            status: status.clone(),
             note: note.clone(),
         },
     )
@@ -44,11 +68,11 @@ pub async fn run(args: MarkArgs, client: ApiClient, mode: OutputMode) -> CliResu
                 mode,
                 json!({
                     "run_id": run.id,
-                    "status": args.status,
+                    "status": status,
                     "note": note,
                     "marks_count": run.marks.len(),
                 }),
-                || println!("✓ marked {} {}", run.id, args.status),
+                || println!("✓ marked {} {}", run.id, status),
             );
             Ok(())
         }

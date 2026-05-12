@@ -1,21 +1,23 @@
-//! `knack run <slug> --input <path>` — execute a skill.
+//! `knack run <slug> [--input <path>] [--runtime <tag>]` — register a Run.
 //!
-//! v0 implementation: detect the local agent runtime (Claude Code via `claude`
-//! on PATH; Cowork via `cowork`; otherwise direct API), record a Run with the
-//! API, hand off the skill folder + input to the runtime, and finalize the
-//! Run on completion. Per spec § V the agent flywheel needs *something* called
-//! "knack run" that produces a run id agents can `mark`. We focus the v0 on
-//! the telemetry side; runtime auto-detection is intentionally narrow and
-//! falls through to a "no runtime detected" error users can override with
-//! `--runtime raw`.
+//! Telemetry-only by design. The CALLING AGENT (Claude Code, Cursor, Codex,
+//! Cowork, etc.) is responsible for actually performing the work: it reads
+//! `~/.knack/skills/<slug>/SKILL.md` and follows the procedure inline using
+//! its own tools. `knack run` just registers a Run row on the server, prints
+//! the resulting `run-id`, and exits. The agent then calls `knack mark
+//! <run-id> succeeded|failed` once it's done.
 //!
-//! Captures: inputs (filename + sha256), runtime, duration. Output capture is
-//! left to whatever the runtime produces; we record outputs that show up in
-//! the working directory after the run. No fs watcher in v0.
+//! Why no shell-out: there's no portable way to inject a skill folder's
+//! context into "the agent that's calling us" — by definition that agent
+//! already has its own tools and prompt. Trying to dispatch `claude
+//! <input.xlsx>` was a v0 placeholder that did not produce real runs and
+//! confused agents that read the playbook literally. The right contract is
+//! "the agent runs the skill itself; the CLI handles auth + telemetry."
+//!
+//! Captures: skill version pin (current OR `@<semver>`), input filename,
+//! optional inputs_summary, runtime tag (free-form, defaults to "agent").
 
-use std::path::{Path, PathBuf};
-use std::process::Command;
-use std::time::Instant;
+use std::path::PathBuf;
 
 use clap::Args;
 use serde_json::json;
@@ -28,32 +30,34 @@ use crate::output::{chatter, emit_err, emit_ok, OutputMode};
 #[derive(Debug, Args)]
 pub struct RunArgs {
     /// Skill identifier — `<slug>`, `<slug>@<semver>`, or `@<author>/<slug>`
-    /// (with optional `@<semver>`). When a semver is specified, runs that
-    /// historical version instead of the current.
+    /// (with optional `@<semver>`). When a semver is specified, the run is
+    /// attributed to that historical version instead of the current one.
     pub slug: String,
 
-    /// Input file path. Becomes part of the Run's `inputs_summary`.
+    /// Input file path. Captured as part of the Run's `inputs_summary` so
+    /// the telemetry timeline shows what the agent worked on.
     #[arg(long)]
     pub input: Option<PathBuf>,
 
-    /// Runtime to dispatch to. Default: auto-detect.
-    #[arg(long, value_parser = ["auto", "claude-code", "cowork", "raw"])]
+    /// Free-form tag for the calling agent (e.g. "claude-code", "cursor",
+    /// "codex", "cowork"). Stored as metadata on the Run row so multiple
+    /// agents can be told apart in stats. Defaults to "agent".
+    #[arg(long)]
     pub runtime: Option<String>,
 
-    /// Identifier for the calling agent (so multiple agents can be told apart).
+    /// Identifier for the calling agent instance (so multiple sessions of
+    /// the same agent can be distinguished). Optional.
     #[arg(long)]
     pub agent_id: Option<String>,
 
-    /// Don't actually execute — just record a Run with status=unknown.
-    /// Useful for agents that handle execution themselves and only need the
-    /// telemetry plumbing.
-    #[arg(long)]
+    /// Deprecated no-op. Kept for backward compat with v0.2 callers — every
+    /// `knack run` is telemetry-only now.
+    #[arg(long, hide = true)]
     pub no_exec: bool,
 
-    /// Telemetry-only mode: log the run, skip execution, leave status=unknown.
-    /// Equivalent to `--no-exec --runtime raw`. Matches the spec's `--dry`
-    /// flag from `knack run --dry`.
-    #[arg(long, conflicts_with = "no_exec")]
+    /// Deprecated no-op. Equivalent to no_exec above; kept for backward
+    /// compat with the v0 `--dry` flag.
+    #[arg(long, hide = true, conflicts_with = "no_exec")]
     pub dry: bool,
 }
 
@@ -72,9 +76,9 @@ pub async fn run(args: RunArgs, client: ApiClient, mode: OutputMode) -> CliResul
     // Resolve which version to pin to. `@semver` overrides the skill's
     // current_version_id, so agents can replay against a stable historical
     // version even after newer versions ship.
-    let (version_id, version_semver) = match version_filter {
+    let version_id = match version_filter {
         Some(semver) => match api_skills::get_version(&client, &skill.id, semver).await {
-            Ok(v) => (v.id, v.version),
+            Ok(v) => v.id,
             Err(CliError::NotFound(_)) => {
                 let err = CliError::NotFound(format!(
                     "skill `{slug}` has no version `{semver}`"
@@ -87,42 +91,12 @@ pub async fn run(args: RunArgs, client: ApiClient, mode: OutputMode) -> CliResul
                 return Err(e);
             }
         },
-        None => {
-            let id = skill.current_version_id.clone().ok_or_else(|| {
-                CliError::NotFound(format!("skill `{slug}` has no published version"))
-            })?;
-            let semver = skill.current_version_semver.clone().unwrap_or_default();
-            (id, semver)
-        }
-    };
-    let _ = version_semver; // surface in JSON if useful later
-
-    // --dry implies runtime=raw + no_exec — collapse early so the rest of the
-    // pipeline doesn't have to know about the flag.
-    let dry = args.dry;
-    let no_exec = args.no_exec || dry;
-
-    let runtime_choice = if dry {
-        "raw".to_string()
-    } else {
-        args.runtime.clone().unwrap_or_else(|| "auto".into())
-    };
-    let runtime = if runtime_choice == "auto" {
-        detect_runtime().to_string()
-    } else {
-        runtime_choice
+        None => skill.current_version_id.clone().ok_or_else(|| {
+            CliError::NotFound(format!("skill `{slug}` has no published version"))
+        })?,
     };
 
-    // Helpful nudge when the user hasn't asked for raw and we still ended up
-    // there because no local runtime is on PATH. Quiet under --json.
-    if runtime == "raw" && !dry && args.runtime.is_none() {
-        chatter(
-            mode,
-            "no local runtime detected (looked for `claude`, `cowork`); \
-             logging telemetry only — `knack mark <run_id>` after you run \
-             the skill yourself, or install Claude Code.",
-        );
-    }
+    let runtime = args.runtime.clone().unwrap_or_else(|| "agent".to_string());
 
     let inputs_summary = args.input.as_ref().map(|p| {
         json!({
@@ -131,203 +105,45 @@ pub async fn run(args: RunArgs, client: ApiClient, mode: OutputMode) -> CliResul
         })
     });
 
-    chatter(
-        mode,
-        format!("starting run · skill={} runtime={}", args.slug, runtime),
-    );
-
     let run = api_runs::start(
         &client,
         &api_runs::RunCreate {
-            skill_version_id: version_id.clone(),
+            skill_version_id: version_id,
             agent_id: args.agent_id.clone(),
             runtime: Some(runtime.clone()),
-            inputs_summary: inputs_summary.clone(),
+            inputs_summary,
         },
     )
     .await?;
 
-    if no_exec {
-        emit_ok(
-            mode,
-            json!({
-                "run_id": run.id,
-                "skill_version_id": run.skill_version_id,
-                "runtime": runtime,
-                "no_exec": true,
-                "dry": dry,
-            }),
-            || {
-                let prefix = if dry {
-                    "✓ dry run logged"
-                } else {
-                    "✓ run logged"
-                };
-                println!("{prefix} · {}", run.id);
-                println!("  knack mark {} --status=succeeded", run.id);
-            },
-        );
-        return Ok(());
-    }
-
-    // Try to execute. v0 dispatch is intentionally minimal — we shell out to
-    // the detected runtime if we can find a working executable, else fall
-    // through to "unknown" status so agents can still close the loop.
-    let started = Instant::now();
-    let (status, files_touched) = match runtime.as_str() {
-        "claude-code" | "cowork" => {
-            let exe = if runtime == "claude-code" {
-                "claude"
-            } else {
-                "cowork"
-            };
-            match dispatch_runtime(exe, args.input.as_deref()) {
-                Ok(()) => ("succeeded", scan_output_files(&args.input)),
-                Err(e) => {
-                    chatter(mode, format!("runtime {exe} failed: {e}"));
-                    ("failed", vec![])
-                }
-            }
-        }
-        "raw" => {
-            // No external runtime — treat the run as deferred to the caller.
-            ("unknown", vec![])
-        }
-        other => {
-            chatter(
-                mode,
-                format!("unknown runtime `{other}` — leaving status=unknown"),
-            );
-            ("unknown", vec![])
-        }
-    };
-    let duration_s = started.elapsed().as_secs_f64();
-
-    let finished = api_runs::finish(
-        &client,
-        &run.id,
-        &api_runs::RunFinish {
-            status: status.to_string(),
-            outputs_summary: Some(json!({ "duration_s": duration_s })),
-            files_touched: if files_touched.is_empty() {
-                None
-            } else {
-                Some(files_touched)
-            },
-        },
-    )
-    .await?;
+    chatter(
+        mode,
+        format!(
+            "run registered · skill={} · runtime={} — execute the skill, then \
+             `knack mark {} succeeded` (or `failed --note \"…\"`)",
+            args.slug, runtime, run.id,
+        ),
+    );
 
     emit_ok(
         mode,
         json!({
-            "run_id": finished.id,
-            "skill_version_id": finished.skill_version_id,
-            "status": finished.status,
-            "duration_s": duration_s,
+            "run_id": run.id,
+            "skill_version_id": run.skill_version_id,
             "runtime": runtime,
         }),
         || {
-            println!(
-                "✓ run {} · {} · {:.1}s",
-                finished.id, finished.status, duration_s
-            );
-            println!("  knack mark {} --status=succeeded", finished.id);
+            println!("✓ run registered · {}", run.id);
+            println!("  next: read ~/.knack/skills/{}/SKILL.md and do the work yourself,", args.slug);
+            println!("        then `knack mark {} succeeded` (or `failed --note \"…\"`).", run.id);
         },
     );
+
     Ok(())
-}
-
-fn detect_runtime() -> &'static str {
-    if which("claude").is_some() {
-        "claude-code"
-    } else if which("cowork").is_some() {
-        "cowork"
-    } else {
-        "raw"
-    }
-}
-
-fn which(bin: &str) -> Option<PathBuf> {
-    let exe = if cfg!(target_os = "windows") {
-        format!("{bin}.exe")
-    } else {
-        bin.to_string()
-    };
-    let path = std::env::var_os("PATH")?;
-    for dir in std::env::split_paths(&path) {
-        let candidate = dir.join(&exe);
-        if candidate.is_file() {
-            return Some(candidate);
-        }
-    }
-    None
-}
-
-fn dispatch_runtime(exe: &str, input: Option<&Path>) -> CliResult<()> {
-    let mut cmd = Command::new(exe);
-    if let Some(p) = input {
-        cmd.arg(p);
-    }
-    let status = cmd.status()?;
-    if !status.success() {
-        return Err(CliError::User {
-            code: "RUN_RUNTIME_NONZERO".into(),
-            message: format!("{exe} exited with {status}"),
-            hint: None,
-        });
-    }
-    Ok(())
-}
-
-/// Files newer than the start of the run, in the input's directory. Crude but
-/// useful for v0; a real fs-watcher comes in E9 polish.
-fn scan_output_files(input: &Option<PathBuf>) -> Vec<String> {
-    let Some(input) = input else { return vec![] };
-    let Some(parent) = input.parent() else {
-        return vec![];
-    };
-    let Ok(entries) = std::fs::read_dir(parent) else {
-        return vec![];
-    };
-    let mut out = Vec::new();
-    for entry in entries.flatten() {
-        let p = entry.path();
-        if p == *input {
-            continue;
-        }
-        if let Some(name) = p.file_name().and_then(|s| s.to_str()) {
-            out.push(name.to_string());
-        }
-    }
-    out
 }
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-
-    #[test]
-    fn detect_runtime_falls_back_to_raw() {
-        // We can't mock PATH portably, but we can at least exercise the
-        // function and assert it returns one of the known options.
-        let r = detect_runtime();
-        assert!(matches!(r, "claude-code" | "cowork" | "raw"));
-    }
-
-    #[test]
-    fn scan_output_files_skips_input() {
-        let dir = tempfile::tempdir().unwrap();
-        let input = dir.path().join("input.xlsx");
-        std::fs::write(&input, "in").unwrap();
-        std::fs::write(dir.path().join("output.xlsx"), "out").unwrap();
-        let names = scan_output_files(&Some(input));
-        assert!(names.contains(&"output.xlsx".to_string()));
-        assert!(!names.contains(&"input.xlsx".to_string()));
-    }
-
-    #[test]
-    fn scan_output_files_no_input_returns_empty() {
-        assert!(scan_output_files(&None).is_empty());
-    }
+    // Behavior tests live in tests/runs.rs (the wiremock integration suite).
+    // The command's logic is the API call + a slug parse, both covered there.
 }
