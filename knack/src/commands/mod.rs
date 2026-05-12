@@ -17,6 +17,7 @@ pub mod pull;
 pub mod rate;
 pub mod run;
 pub mod search;
+pub mod team;
 pub mod username;
 pub mod validate;
 
@@ -93,6 +94,10 @@ pub enum Command {
 
     /// Rate a public skill (1-5 stars). Pass --clear to remove your rating.
     Rate(rate::RateArgs),
+
+    /// Team management: create / list / show / invite / accept / role
+    #[command(subcommand)]
+    Team(team::TeamCmd),
 }
 
 /// Cross-cutting flags every subcommand inherits.
@@ -161,5 +166,6 @@ pub async fn dispatch(cmd: Command, client: ApiClient, mode: OutputMode) -> CliR
         Command::Username(a) => username::run(a, client, mode).await,
         Command::Search(a) => search::run(a, client, mode).await,
         Command::Rate(a) => rate::run(a, client, mode).await,
+        Command::Team(c) => team::run(c, client, mode).await,
     }
 }

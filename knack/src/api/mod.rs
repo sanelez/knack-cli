@@ -12,6 +12,7 @@ pub mod auth;
 pub mod marketplace;
 pub mod runs;
 pub mod skills;
+pub mod teams;
 pub mod users;
 
 use std::sync::Arc;
