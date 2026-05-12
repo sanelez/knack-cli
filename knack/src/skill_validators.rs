@@ -165,12 +165,13 @@ pub fn validate_skill_md(text: &str, report: &mut ValidationReport) {
 }
 
 /// Mirror of the server's `MetaKnack` schema. Required fields:
-/// id, name, slug, author. Slug must match `^[a-z0-9][a-z0-9-]*$`.
+/// name, slug, author. Slug must match `^[a-z0-9][a-z0-9-]*$`. `id` is
+/// server-managed: the identity is pinned by the URL path on publish, so
+/// the file does not have to repeat it. If an `id` is present, we don't
+/// touch it; if it's missing, we don't complain.
 pub fn validate_meta_yaml(text: &str, report: &mut ValidationReport) {
     #[derive(Deserialize)]
     struct MetaShape {
-        #[serde(default)]
-        id: Option<String>,
         #[serde(default)]
         name: Option<String>,
         #[serde(default)]
@@ -186,7 +187,6 @@ pub fn validate_meta_yaml(text: &str, report: &mut ValidationReport) {
         }
     };
 
-    require_non_empty(&meta.id, "meta.knack.yaml/id", report);
     require_non_empty(&meta.name, "meta.knack.yaml/name", report);
     require_non_empty(&meta.author, "meta.knack.yaml/author", report);
 
@@ -257,8 +257,19 @@ mod tests {
     use super::*;
 
     #[test]
-    fn meta_yaml_all_four_required_pass() {
-        let yaml = "id: abc\nname: \"Foo\"\nslug: foo\nauthor: u@example.com\n";
+    fn meta_yaml_three_required_pass() {
+        // id is server-managed and optional in the file now; only name,
+        // slug, author must be supplied.
+        let yaml = "name: \"Foo\"\nslug: foo\nauthor: u@example.com\n";
+        let mut r = ValidationReport::default();
+        validate_meta_yaml(yaml, &mut r);
+        assert!(r.is_ok(), "{}", r.summary());
+    }
+
+    #[test]
+    fn meta_yaml_id_present_still_passes() {
+        // Backward compat: existing files with `id:` keep working.
+        let yaml = "id: skill-id-abc\nname: \"Foo\"\nslug: foo\nauthor: u@example.com\n";
         let mut r = ValidationReport::default();
         validate_meta_yaml(yaml, &mut r);
         assert!(r.is_ok(), "{}", r.summary());
@@ -270,10 +281,11 @@ mod tests {
         let mut r = ValidationReport::default();
         validate_meta_yaml(yaml, &mut r);
         let paths: Vec<&str> = r.issues.iter().map(|i| i.path.as_str()).collect();
-        assert!(paths.contains(&"meta.knack.yaml/id"));
         assert!(paths.contains(&"meta.knack.yaml/name"));
         assert!(paths.contains(&"meta.knack.yaml/slug"));
         assert!(paths.contains(&"meta.knack.yaml/author"));
+        // id should NOT be flagged any more.
+        assert!(!paths.contains(&"meta.knack.yaml/id"));
     }
 
     #[test]
