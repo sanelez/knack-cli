@@ -27,7 +27,9 @@ use crate::output::{chatter, emit_err, emit_ok, OutputMode};
 
 #[derive(Debug, Args)]
 pub struct RunArgs {
-    /// Skill slug to execute.
+    /// Skill identifier — `<slug>`, `<slug>@<semver>`, or `@<author>/<slug>`
+    /// (with optional `@<semver>`). When a semver is specified, runs that
+    /// historical version instead of the current.
     pub slug: String,
 
     /// Input file path. Becomes part of the Run's `inputs_summary`.
@@ -56,17 +58,44 @@ pub struct RunArgs {
 }
 
 pub async fn run(args: RunArgs, client: ApiClient, mode: OutputMode) -> CliResult<()> {
-    let skill = match api_skills::find_by_slug(&client, &args.slug).await? {
+    let (slug, version_filter) = crate::slug::parse_slug_at_version(&args.slug);
+
+    let skill = match api_skills::find_by_slug(&client, slug).await? {
         Some(s) => s,
         None => {
-            let err = CliError::NotFound(format!("skill `{}` not found", args.slug));
+            let err = CliError::NotFound(format!("skill `{slug}` not found"));
             emit_err(mode, &err);
             return Err(err);
         }
     };
-    let version_id = skill.current_version_id.clone().ok_or_else(|| {
-        CliError::NotFound(format!("skill `{}` has no published version", args.slug))
-    })?;
+
+    // Resolve which version to pin to. `@semver` overrides the skill's
+    // current_version_id, so agents can replay against a stable historical
+    // version even after newer versions ship.
+    let (version_id, version_semver) = match version_filter {
+        Some(semver) => match api_skills::get_version(&client, &skill.id, semver).await {
+            Ok(v) => (v.id, v.version),
+            Err(CliError::NotFound(_)) => {
+                let err = CliError::NotFound(format!(
+                    "skill `{slug}` has no version `{semver}`"
+                ));
+                emit_err(mode, &err);
+                return Err(err);
+            }
+            Err(e) => {
+                emit_err(mode, &e);
+                return Err(e);
+            }
+        },
+        None => {
+            let id = skill.current_version_id.clone().ok_or_else(|| {
+                CliError::NotFound(format!("skill `{slug}` has no published version"))
+            })?;
+            let semver = skill.current_version_semver.clone().unwrap_or_default();
+            (id, semver)
+        }
+    };
+    let _ = version_semver; // surface in JSON if useful later
 
     // --dry implies runtime=raw + no_exec — collapse early so the rest of the
     // pipeline doesn't have to know about the flag.

@@ -34,7 +34,7 @@ pub struct PullArgs {
 }
 
 pub async fn run(args: PullArgs, client: ApiClient, mode: OutputMode) -> CliResult<()> {
-    let (slug, version_filter) = parse_slug_at_version(&args.slug_at_version);
+    let (slug, version_filter) = crate::slug::parse_slug_at_version(&args.slug_at_version);
 
     let skill = match api_skills::find_by_slug(&client, slug).await {
         Ok(Some(s)) => s,
@@ -142,27 +142,6 @@ pub async fn run(args: PullArgs, client: ApiClient, mode: OutputMode) -> CliResu
     Ok(())
 }
 
-/// Splits a pull target into `(slug-or-handle, version)`.
-///
-/// Accepted shapes:
-///
-///   * `slug`                     → `(slug, None)`
-///   * `slug@1.2.0`                → `(slug, Some("1.2.0"))`
-///   * `@author/slug`             → `("@author/slug", None)`
-///   * `@author/slug@1.2.0`        → `("@author/slug", Some("1.2.0"))`
-///
-/// The leading `@` of a handle is preserved so `find_by_slug` can route
-/// to the marketplace resolver. Only an `@` that appears *after* a
-/// leading-handle prefix counts as the version separator.
-fn parse_slug_at_version(s: &str) -> (&str, Option<&str>) {
-    let lookup_start = usize::from(s.starts_with('@'));
-    if let Some(rel) = s[lookup_start..].find('@') {
-        let abs = lookup_start + rel;
-        return (&s[..abs], Some(&s[abs + 1..]));
-    }
-    (s, None)
-}
-
 /// Idempotent write — returns the path iff bytes changed (or file was new).
 fn write_if_changed(path: &std::path::Path, content: &str) -> std::io::Result<Vec<PathBuf>> {
     if path.exists() {
@@ -178,38 +157,6 @@ fn write_if_changed(path: &std::path::Path, content: &str) -> std::io::Result<Ve
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn parse_with_version() {
-        assert_eq!(parse_slug_at_version("foo@1.0.0"), ("foo", Some("1.0.0")));
-    }
-
-    #[test]
-    fn parse_without_version() {
-        assert_eq!(parse_slug_at_version("foo"), ("foo", None));
-    }
-
-    #[test]
-    fn parse_v_prefix_is_left_intact_for_normalize() {
-        // Server normalizes `v1.0` → `1.0.0`. CLI doesn't pre-strip.
-        assert_eq!(parse_slug_at_version("foo@v1.0"), ("foo", Some("v1.0")));
-    }
-
-    #[test]
-    fn parse_handle_slug_no_version() {
-        assert_eq!(
-            parse_slug_at_version("@KnackOfficial/monthly-close"),
-            ("@KnackOfficial/monthly-close", None)
-        );
-    }
-
-    #[test]
-    fn parse_handle_slug_with_version() {
-        assert_eq!(
-            parse_slug_at_version("@KnackOfficial/monthly-close@1.2.0"),
-            ("@KnackOfficial/monthly-close", Some("1.2.0"))
-        );
-    }
 
     #[test]
     fn write_if_changed_skips_when_identical() {
