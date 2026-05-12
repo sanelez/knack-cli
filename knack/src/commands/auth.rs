@@ -14,7 +14,8 @@ use crate::output::{chatter, emit_err, emit_ok, OutputMode};
 
 #[derive(Debug, Subcommand)]
 pub enum AuthCmd {
-    /// Sign in via the browser (OAuth 2.0 device flow)
+    /// Sign in via the browser (OAuth 2.0 device flow). Use --start / --poll
+    /// for sandboxed agents that can't keep a long-running process alive.
     Login(LoginArgs),
     /// Revoke the current session and forget the local tokens
     Logout,
@@ -29,15 +30,137 @@ pub struct LoginArgs {
     /// Don't try to open the browser; just print the URL.
     #[arg(long)]
     pub no_browser: bool,
+
+    /// Stateless mode: print the device_code + verification_uri as JSON and
+    /// exit immediately. Pair with `--poll <device_code>` to check status.
+    /// Use this when running inside an agent sandbox that kills long-running
+    /// background processes (e.g. Claude Cowork's bwrap --die-with-parent).
+    #[arg(long, conflicts_with = "poll")]
+    pub start: bool,
+
+    /// Stateless mode: run a single poll against the device flow. Saves
+    /// tokens to the keyring on `approved` and exits. Re-run the same
+    /// command repeatedly (e.g. between agent turns) until the response
+    /// reports `approved` or `expired`.
+    #[arg(long, value_name = "DEVICE_CODE")]
+    pub poll: Option<String>,
 }
 
 pub async fn run(cmd: AuthCmd, client: ApiClient, mode: OutputMode) -> CliResult<()> {
     match cmd {
-        AuthCmd::Login(a) => login(a, client, mode).await,
+        AuthCmd::Login(a) => {
+            if a.start {
+                login_start(client, mode).await
+            } else if let Some(code) = a.poll.clone() {
+                login_poll(client, mode, &code).await
+            } else {
+                login(a, client, mode).await
+            }
+        }
         AuthCmd::Logout => logout(client, mode).await,
         AuthCmd::Status => status(client, mode).await,
         AuthCmd::Refresh => refresh(client, mode).await,
     }
+}
+
+/// Stateless step 1: kick off the device flow and return the user-visible
+/// code + URL. Exit immediately so the caller (e.g. a sandboxed agent) can
+/// hand the URL to the human, wait for them to click approve, then call
+/// `--poll <device_code>` repeatedly until the status changes to
+/// `approved`. Lives outside any long-lived process.
+async fn login_start(client: ApiClient, mode: OutputMode) -> CliResult<()> {
+    let start = match api_auth::device_start(&client).await {
+        Ok(s) => s,
+        Err(e) => {
+            emit_err(mode, &e);
+            return Err(e);
+        }
+    };
+    emit_ok(
+        mode,
+        json!({
+            "device_code": start.device_code,
+            "user_code": start.user_code,
+            "verification_uri": start.verification_uri,
+            "expires_in": start.expires_in,
+            "interval": start.interval,
+        }),
+        || {
+            println!("Open {} and approve the code:", start.verification_uri);
+            println!("  {}", start.user_code);
+            println!(
+                "Then run: knack auth login --poll {} (repeat until approved)",
+                start.device_code,
+            );
+        },
+    );
+    Ok(())
+}
+
+/// Stateless step 2: ask the server once whether the device flow has been
+/// approved. If yes, persist the new tokens to the keyring. Either way,
+/// emit a JSON envelope the caller can branch on (`status` field).
+///
+/// Exits 0 in all non-network cases — including `authorization_pending`,
+/// `slow_down`, `denied`, and `expired` — so the caller doesn't have to
+/// distinguish "the CLI broke" from "the user hasn't clicked yet". Bad
+/// network or 5xx still propagates as a normal error.
+async fn login_poll(client: ApiClient, mode: OutputMode, device_code: &str) -> CliResult<()> {
+    let resp = match api_auth::device_poll(&client, device_code).await {
+        Ok(r) => r,
+        Err(e) => {
+            emit_err(mode, &e);
+            return Err(e);
+        }
+    };
+    use api_auth::PollStatus;
+    let status_str = match resp.status {
+        PollStatus::AuthorizationPending => "authorization_pending",
+        PollStatus::SlowDown => "slow_down",
+        PollStatus::Denied => "denied",
+        PollStatus::Expired => "expired",
+        PollStatus::Approved => "approved",
+    };
+
+    // Approved: save the tokens before reporting success, so the caller
+    // doesn't try to use the bearer before the keyring has been updated.
+    if matches!(resp.status, PollStatus::Approved) {
+        let access = resp.access_token.clone().unwrap_or_default();
+        let refresh = resp.refresh_token.clone().unwrap_or_default();
+        let expires = resp.expires_in.unwrap_or(0);
+        if access.is_empty() || refresh.is_empty() {
+            let err = CliError::AuthFailed("server omitted token pair".into());
+            emit_err(mode, &err);
+            return Err(err);
+        }
+        let tokens = StoredTokens {
+            access_token: access,
+            refresh_token: refresh,
+            expires_at: chrono::Utc::now().timestamp() + expires,
+        };
+        client.store.save(&client.account, &tokens)?;
+    }
+
+    emit_ok(
+        mode,
+        json!({
+            "status": status_str,
+            "approved": matches!(resp.status, PollStatus::Approved),
+            "expires_in": resp.expires_in,
+        }),
+        || match resp.status {
+            PollStatus::Approved => println!("✓ approved, tokens saved"),
+            PollStatus::AuthorizationPending => {
+                println!("waiting for approval — re-run --poll in a few seconds")
+            }
+            PollStatus::SlowDown => {
+                println!("slow down — poll interval too tight, wait longer")
+            }
+            PollStatus::Denied => println!("approval denied"),
+            PollStatus::Expired => println!("device code expired — run --start again"),
+        },
+    );
+    Ok(())
 }
 
 async fn login(args: LoginArgs, client: ApiClient, mode: OutputMode) -> CliResult<()> {
