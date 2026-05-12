@@ -17,11 +17,6 @@ pub struct UsernameArgs {
     /// must start with a letter or digit. Case-insensitive; stored
     /// lowercased.
     pub username: String,
-
-    /// Skip the availability pre-check. Use this when scripting against a
-    /// stable username, since the server still rejects unavailable handles.
-    #[arg(long)]
-    pub no_check: bool,
 }
 
 pub async fn run(args: UsernameArgs, client: ApiClient, mode: OutputMode) -> CliResult<()> {
@@ -36,24 +31,25 @@ pub async fn run(args: UsernameArgs, client: ApiClient, mode: OutputMode) -> Cli
         return Err(err);
     }
 
-    if !args.no_check {
-        match api_users::check_username(&client, &candidate).await {
-            Ok(avail) => {
-                if !avail.available {
-                    let reason = avail.reason.unwrap_or_else(|| "UNAVAILABLE".to_string());
-                    let err = CliError::User {
-                        code: reason.clone(),
-                        message: format!("username `{candidate}` is not available ({reason})"),
-                        hint: Some("pick a different name (3-32 chars, [a-z0-9_-])".into()),
-                    };
-                    emit_err(mode, &err);
-                    return Err(err);
-                }
+    // Availability pre-check is mandatory. Usernames are permanent, so a
+    // typo or a stale binding would lock the caller in forever; we never
+    // want to ship a flag that skips this gate.
+    match api_users::check_username(&client, &candidate).await {
+        Ok(avail) => {
+            if !avail.available {
+                let reason = avail.reason.unwrap_or_else(|| "UNAVAILABLE".to_string());
+                let err = CliError::User {
+                    code: reason.clone(),
+                    message: format!("username `{candidate}` is not available ({reason})"),
+                    hint: Some("pick a different name (3-32 chars, [a-z0-9_-])".into()),
+                };
+                emit_err(mode, &err);
+                return Err(err);
             }
-            Err(e) => {
-                emit_err(mode, &e);
-                return Err(e);
-            }
+        }
+        Err(e) => {
+            emit_err(mode, &e);
+            return Err(e);
         }
     }
 
