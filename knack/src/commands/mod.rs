@@ -6,6 +6,7 @@ pub mod create;
 pub mod debug;
 pub mod diff;
 pub mod docs;
+pub mod edit;
 pub mod info;
 pub mod install;
 pub mod introspect;
@@ -46,6 +47,9 @@ pub enum Command {
 
     /// Create a new skill shell (slug + name + scope). Run `knack publish` after.
     Create(create::CreateArgs),
+
+    /// Update a skill's name, description, or scope. Slug is immutable.
+    Edit(edit::EditArgs),
 
     /// Bump the semver and push the local skill folder
     Publish(publish::PublishArgs),
@@ -131,6 +135,7 @@ pub async fn dispatch(cmd: Command, client: ApiClient, mode: OutputMode) -> CliR
         Command::Pull(a) => pull::run(a, client, mode).await,
         Command::Diff(a) => diff::run(a, client, mode).await,
         Command::Create(a) => create::run(a, client, mode).await,
+        Command::Edit(a) => edit::run(a, client, mode).await,
         Command::Publish(a) => publish::run(a, client, mode).await,
         Command::Run(a) => run::run(a, client, mode).await,
         Command::Mark(a) => mark::run(a, client, mode).await,

@@ -271,6 +271,30 @@ pub async fn create(client: &ApiClient, body: &SkillCreate) -> Result<Skill, Cli
         .await
 }
 
+/// PATCH /skills/{skill_id} — update name/description/scope. Slug is
+/// immutable server-side. Fields omitted from the body are unchanged.
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct SkillUpdate {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub scope: Option<String>,
+}
+
+pub async fn update(
+    client: &ApiClient,
+    skill_id: &str,
+    body: &SkillUpdate,
+) -> Result<Skill, CliError> {
+    let path = format!("/skills/{skill_id}");
+    let body = serde_json::to_value(body)?;
+    client
+        .send_json::<Skill>(|c| Ok(c.request(Method::PATCH, &path)?.json(&body)))
+        .await
+}
+
 pub async fn create_version(
     client: &ApiClient,
     skill_id: &str,
