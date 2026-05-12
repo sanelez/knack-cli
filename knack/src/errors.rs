@@ -99,7 +99,10 @@ impl CliError {
             CliError::User { hint, .. }
             | CliError::Conflict { hint, .. }
             | CliError::PlanLimit { hint, .. } => hint.as_deref(),
-            CliError::AuthRequired => Some("run `knack auth login`"),
+            CliError::AuthRequired => Some(
+                "your knack session expired. run `knack auth login` to sign in again \
+                 (about 30 seconds in the browser)",
+            ),
             _ => None,
         }
     }

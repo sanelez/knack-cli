@@ -315,6 +315,18 @@ impl ApiClient {
         Err(map_api_error_bytes(status, bytes.as_deref()))
     }
 
+    /// Force a refresh, persist the new pair, and return the seconds until
+    /// the new access token expires. Used by `knack auth refresh` so
+    /// long-running agents can proactively roll the token before it expires.
+    pub async fn refresh_tokens(&self) -> Result<i64, CliError> {
+        self.try_refresh().await?;
+        let stored = self
+            .store
+            .load(&self.account)?
+            .ok_or(CliError::AuthRequired)?;
+        Ok(stored.expires_at - chrono::Utc::now().timestamp())
+    }
+
     async fn try_refresh(&self) -> Result<(), CliError> {
         let Some(stored) = self.store.load(&self.account)? else {
             return Err(CliError::AuthRequired);

@@ -18,8 +18,10 @@ pub enum AuthCmd {
     Login(LoginArgs),
     /// Revoke the current session and forget the local tokens
     Logout,
-    /// Print the current authenticated user
+    /// Print the current authenticated user + token expiry
     Status,
+    /// Proactively refresh the access token (long-running agents). Idempotent.
+    Refresh,
 }
 
 #[derive(Debug, clap::Args)]
@@ -34,6 +36,7 @@ pub async fn run(cmd: AuthCmd, client: ApiClient, mode: OutputMode) -> CliResult
         AuthCmd::Login(a) => login(a, client, mode).await,
         AuthCmd::Logout => logout(client, mode).await,
         AuthCmd::Status => status(client, mode).await,
+        AuthCmd::Refresh => refresh(client, mode).await,
     }
 }
 
@@ -170,11 +173,18 @@ async fn logout(client: ApiClient, mode: OutputMode) -> CliResult<()> {
 }
 
 async fn status(client: ApiClient, mode: OutputMode) -> CliResult<()> {
-    if client.store.load(&client.account)?.is_none() && client.bearer_override.is_none() {
+    let stored = client.store.load(&client.account)?;
+    if stored.is_none() && client.bearer_override.is_none() {
         let err = CliError::AuthRequired;
         emit_err(mode, &err);
         return Err(err);
     }
+    // Read the access_token's `exp` claim. We trust our own keyring entry —
+    // no signature check needed here, and avoiding that means we don't have
+    // to embed the server's HS256 secret in the CLI.
+    let expires_in_secs = stored
+        .as_ref()
+        .and_then(|t| jwt_exp_seconds_from_now(&t.access_token));
     match api_auth::me(&client).await {
         Ok(me) => {
             emit_ok(
@@ -185,9 +195,20 @@ async fn status(client: ApiClient, mode: OutputMode) -> CliResult<()> {
                     "plan": me.plan,
                     "account": client.account,
                     "auth_method": me.auth_method,
+                    "token_expires_in_seconds": expires_in_secs,
                 }),
                 || {
-                    println!("{} ({})", me.email, me.plan);
+                    let validity = match expires_in_secs {
+                        Some(s) if s > 0 => format!(", token valid for {}", human_duration(s)),
+                        Some(_) => ", token expired (refresh on next call)".into(),
+                        None => "".into(),
+                    };
+                    println!("{} ({}){}", me.email, me.plan, validity);
+                    if let Some(s) = expires_in_secs {
+                        if s > 0 && s < 86_400 {
+                            println!("    proactively refresh with `knack auth refresh`");
+                        }
+                    }
                 },
             );
             Ok(())
@@ -196,5 +217,138 @@ async fn status(client: ApiClient, mode: OutputMode) -> CliResult<()> {
             emit_err(mode, &e);
             Err(e)
         }
+    }
+}
+
+async fn refresh(client: ApiClient, mode: OutputMode) -> CliResult<()> {
+    match client.refresh_tokens().await {
+        Ok(secs) => {
+            emit_ok(
+                mode,
+                json!({ "token_expires_in_seconds": secs }),
+                || println!("✓ refreshed, token valid for {}", human_duration(secs)),
+            );
+            Ok(())
+        }
+        Err(e) => {
+            emit_err(mode, &e);
+            Err(e)
+        }
+    }
+}
+
+/// Decode a JWT's payload (middle base64url segment) and return
+/// `exp - now` in seconds. Doesn't verify the signature — we trust the
+/// token because we just pulled it out of our own keyring. Returns
+/// `None` for any decoding failure so callers fall back gracefully.
+fn jwt_exp_seconds_from_now(token: &str) -> Option<i64> {
+    let payload_b64 = token.split('.').nth(1)?;
+    let bytes = base64url_decode(payload_b64)?;
+    let value: serde_json::Value = serde_json::from_slice(&bytes).ok()?;
+    let exp = value.get("exp")?.as_i64()?;
+    Some(exp - chrono::Utc::now().timestamp())
+}
+
+/// Minimal base64url decoder (no padding). Avoids pulling a new crate in
+/// just for one JWT field.
+fn base64url_decode(s: &str) -> Option<Vec<u8>> {
+    fn val(c: u8) -> Option<u8> {
+        match c {
+            b'A'..=b'Z' => Some(c - b'A'),
+            b'a'..=b'z' => Some(c - b'a' + 26),
+            b'0'..=b'9' => Some(c - b'0' + 52),
+            b'-' => Some(62),
+            b'_' => Some(63),
+            _ => None,
+        }
+    }
+    let bytes = s.as_bytes();
+    let mut out = Vec::with_capacity((bytes.len() / 4) * 3 + 2);
+    let mut buf: u32 = 0;
+    let mut bits = 0u32;
+    for &b in bytes {
+        let v = val(b)? as u32;
+        buf = (buf << 6) | v;
+        bits += 6;
+        if bits >= 8 {
+            bits -= 8;
+            out.push(((buf >> bits) & 0xff) as u8);
+        }
+    }
+    Some(out)
+}
+
+/// Render a duration like `364d 23h` or `2h 14m` or `45s`.
+fn human_duration(seconds: i64) -> String {
+    if seconds <= 0 {
+        return "0s".to_string();
+    }
+    let days = seconds / 86_400;
+    let hours = (seconds % 86_400) / 3600;
+    let mins = (seconds % 3600) / 60;
+    if days > 0 {
+        format!("{days}d {hours}h")
+    } else if hours > 0 {
+        format!("{hours}h {mins}m")
+    } else {
+        format!("{mins}m {}s", seconds % 60)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn human_duration_days_hours() {
+        assert_eq!(human_duration(365 * 86_400 + 3 * 3600), "365d 3h");
+    }
+
+    #[test]
+    fn human_duration_hours_mins() {
+        assert_eq!(human_duration(2 * 3600 + 14 * 60), "2h 14m");
+    }
+
+    #[test]
+    fn human_duration_zero() {
+        assert_eq!(human_duration(0), "0s");
+        assert_eq!(human_duration(-5), "0s");
+    }
+
+    #[test]
+    fn base64url_decode_basic() {
+        // {"exp": 99} → eyJleHAiOiA5OX0
+        assert_eq!(base64url_decode("eyJleHAiOiA5OX0"), Some(b"{\"exp\": 99}".to_vec()));
+    }
+
+    #[test]
+    fn jwt_exp_decode_with_far_future_exp() {
+        // Hand-craft a fake JWT with payload {"exp": <now + 365d>}.
+        let future = chrono::Utc::now().timestamp() + 365 * 86_400;
+        let payload = serde_json::json!({ "exp": future }).to_string();
+        // base64url encode without padding
+        let b64 = {
+            let mut out = String::new();
+            let bytes = payload.as_bytes();
+            let alphabet = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+            let mut buf = 0u32;
+            let mut bits = 0u32;
+            for &b in bytes {
+                buf = (buf << 8) | b as u32;
+                bits += 8;
+                while bits >= 6 {
+                    bits -= 6;
+                    out.push(alphabet[((buf >> bits) & 0x3f) as usize] as char);
+                }
+            }
+            if bits > 0 {
+                out.push(alphabet[((buf << (6 - bits)) & 0x3f) as usize] as char);
+            }
+            out
+        };
+        let token = format!("header.{b64}.sig");
+        let secs = jwt_exp_seconds_from_now(&token).unwrap();
+        // Should be within a few seconds of 365d.
+        assert!((secs - 365 * 86_400).abs() < 5, "got {secs}");
     }
 }
