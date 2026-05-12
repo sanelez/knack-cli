@@ -14,7 +14,9 @@ pub mod list;
 pub mod mark;
 pub mod publish;
 pub mod pull;
+pub mod rate;
 pub mod run;
+pub mod search;
 pub mod username;
 pub mod validate;
 
@@ -85,6 +87,12 @@ pub enum Command {
 
     /// Claim a marketplace username (one-time). Required to publish public skills.
     Username(username::UsernameArgs),
+
+    /// Search the public marketplace by keyword
+    Search(search::SearchArgs),
+
+    /// Rate a public skill (1-5 stars). Pass --clear to remove your rating.
+    Rate(rate::RateArgs),
 }
 
 /// Cross-cutting flags every subcommand inherits.
@@ -151,5 +159,7 @@ pub async fn dispatch(cmd: Command, client: ApiClient, mode: OutputMode) -> CliR
         Command::Info(a) => info::run(a, mode).await,
         Command::Validate(a) => validate::run(a, mode),
         Command::Username(a) => username::run(a, client, mode).await,
+        Command::Search(a) => search::run(a, client, mode).await,
+        Command::Rate(a) => rate::run(a, client, mode).await,
     }
 }

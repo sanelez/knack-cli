@@ -9,6 +9,7 @@
 //! this client.
 
 pub mod auth;
+pub mod marketplace;
 pub mod runs;
 pub mod skills;
 pub mod users;
