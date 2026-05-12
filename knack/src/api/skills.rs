@@ -134,8 +134,9 @@ pub async fn get(client: &ApiClient, skill_id: &str) -> Result<Skill, CliError> 
 ///   * `@author/slug` — calls the anonymous marketplace detail endpoint.
 ///     Works for public skills regardless of whether the caller is signed
 ///     in.
-///   * bare `slug` — scans the caller's accessible skills (personal + team).
-///     Requires auth; bounded by the user's own library size.
+///   * bare `slug` — fastpath via `GET /skills?slug=<s>&limit=1`. The server
+///     filters by the `(owner_user_id, slug)` / `(owner_team_id, slug)`
+///     unique indexes, so this is O(1) regardless of library size.
 pub async fn find_by_slug(client: &ApiClient, slug: &str) -> Result<Option<Skill>, CliError> {
     if let Some((author, slug_only)) = parse_handle_slug(slug) {
         return match marketplace_detail(client, &author, &slug_only).await {
@@ -145,19 +146,14 @@ pub async fn find_by_slug(client: &ApiClient, slug: &str) -> Result<Option<Skill
         };
     }
 
-    let mut cursor: Option<String> = None;
-    loop {
-        let page = list(client, None, cursor.as_deref(), 200).await?;
-        for s in &page.items {
-            if s.slug == slug {
-                return Ok(Some(s.clone()));
-            }
-        }
-        if page.next_cursor.is_none() {
-            return Ok(None);
-        }
-        cursor = page.next_cursor;
-    }
+    let slug_owned = slug.to_string();
+    let page = client
+        .send_json::<Page<Skill>>(|c| {
+            Ok(c.request(Method::GET, "/skills")?
+                .query(&[("slug", slug_owned.as_str()), ("limit", "1")]))
+        })
+        .await?;
+    Ok(page.items.into_iter().next())
 }
 
 /// Subset of the marketplace detail shape needed for the CLI pull
