@@ -100,7 +100,10 @@ pub async fn run(args: PublishArgs, client: ApiClient, mode: OutputMode) -> CliR
             );
             PublishOutcome::Legacy
         }
-        Err(e) => return Err(e),
+        Err(e) => {
+            emit_err(mode, &e);
+            return Err(e);
+        }
     };
 
     let new_version = match bundle_outcome {
@@ -109,7 +112,7 @@ pub async fn run(args: PublishArgs, client: ApiClient, mode: OutputMode) -> CliR
             let skill_md = read_required(&dir.join("SKILL.md"))?;
             let intuition_md = read_optional(&dir.join("intuition.md"));
             let meta_yaml = read_optional(&dir.join("meta.knack.yaml"));
-            api_skills::create_version(
+            match api_skills::create_version(
                 &client,
                 &skill.id,
                 &api_skills::SkillVersionCreate {
@@ -122,7 +125,14 @@ pub async fn run(args: PublishArgs, client: ApiClient, mode: OutputMode) -> CliR
                     packed_s3_key: None,
                 },
             )
-            .await?
+            .await
+            {
+                Ok(v) => v,
+                Err(e) => {
+                    emit_err(mode, &e);
+                    return Err(e);
+                }
+            }
         }
     };
 

@@ -36,6 +36,95 @@ struct ApiErrorObject {
     details: Option<Value>,
 }
 
+/// Try every shape we recognize, falling back to raw text.
+///
+/// Production servers wrap errors in `{"error": {"code", "message"}}`, but
+/// FastAPI's built-in Pydantic 422s return `{"detail": [...]}`, and proxies
+/// or rate-limiters can return plain text. Whatever we find, surface it to
+/// the user instead of swallowing it as "no envelope".
+fn map_api_error_bytes(status: StatusCode, bytes: Option<&[u8]>) -> CliError {
+    let Some(bytes) = bytes else {
+        return map_api_error(status, None);
+    };
+    if let Ok(env) = serde_json::from_slice::<ApiErrorBody>(bytes) {
+        return map_api_error(status, Some(env));
+    }
+    if let Ok(detail) = serde_json::from_slice::<FastApiValidationBody>(bytes) {
+        let msg = detail.format();
+        return map_api_error(
+            status,
+            Some(ApiErrorBody {
+                error: ApiErrorObject {
+                    code: "VALIDATION_ERROR".into(),
+                    message: msg,
+                    details: None,
+                },
+            }),
+        );
+    }
+    let text = std::str::from_utf8(bytes).unwrap_or("<binary body>").trim();
+    let snippet = if text.len() > 500 { format!("{}…", &text[..500]) } else { text.to_string() };
+    map_api_error(
+        status,
+        Some(ApiErrorBody {
+            error: ApiErrorObject {
+                code: "UNKNOWN".into(),
+                message: if snippet.is_empty() {
+                    format!("server returned {status} with empty body")
+                } else {
+                    format!("server returned {status}: {snippet}")
+                },
+                details: None,
+            },
+        }),
+    )
+}
+
+#[derive(Debug, Deserialize)]
+struct FastApiValidationBody {
+    detail: Vec<FastApiValidationItem>,
+}
+
+#[derive(Debug, Deserialize)]
+struct FastApiValidationItem {
+    #[serde(default)]
+    loc: Vec<Value>,
+    #[serde(default)]
+    msg: String,
+    #[serde(default, rename = "type")]
+    kind: String,
+}
+
+impl FastApiValidationBody {
+    fn format(&self) -> String {
+        let parts: Vec<String> = self
+            .detail
+            .iter()
+            .map(|i| {
+                let loc = i
+                    .loc
+                    .iter()
+                    .map(|v| match v {
+                        Value::String(s) => s.clone(),
+                        v => v.to_string(),
+                    })
+                    .collect::<Vec<_>>()
+                    .join(".");
+                if i.kind.is_empty() {
+                    format!("{loc}: {}", i.msg)
+                } else {
+                    format!("{loc}: {} ({})", i.msg, i.kind)
+                }
+            })
+            .collect();
+        if parts.is_empty() {
+            "request validation failed".into()
+        } else {
+            format!("request validation failed — {}", parts.join("; "))
+        }
+    }
+}
+
 /// Translate a status + JSON body into the right [`CliError`] variant.
 fn map_api_error(status: StatusCode, body: Option<ApiErrorBody>) -> CliError {
     let (code, message) = match body {
@@ -154,11 +243,11 @@ impl ApiClient {
             if status2.is_success() {
                 return decode_body(resp2).await;
             }
-            let body = resp2.json::<ApiErrorBody>().await.ok();
-            return Err(map_api_error(status2, body));
+            let bytes2 = resp2.bytes().await.ok();
+            return Err(map_api_error_bytes(status2, bytes2.as_deref()));
         }
-        let body = resp.json::<ApiErrorBody>().await.ok();
-        Err(map_api_error(status, body))
+        let bytes = resp.bytes().await.ok();
+        Err(map_api_error_bytes(status, bytes.as_deref()))
     }
 
     /// Send a request and discard the body (204 / 200 with empty body).
@@ -180,11 +269,11 @@ impl ApiClient {
             if status2.is_success() {
                 return Ok(());
             }
-            let body = resp2.json::<ApiErrorBody>().await.ok();
-            return Err(map_api_error(status2, body));
+            let bytes2 = resp2.bytes().await.ok();
+            return Err(map_api_error_bytes(status2, bytes2.as_deref()));
         }
-        let body = resp.json::<ApiErrorBody>().await.ok();
-        Err(map_api_error(status, body))
+        let bytes = resp.bytes().await.ok();
+        Err(map_api_error_bytes(status, bytes.as_deref()))
     }
 
     async fn try_refresh(&self) -> Result<(), CliError> {
