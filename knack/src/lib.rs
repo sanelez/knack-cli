@@ -10,3 +10,4 @@ pub mod docs;
 pub mod errors;
 pub mod output;
 pub mod skill_pack;
+pub mod skill_validators;
