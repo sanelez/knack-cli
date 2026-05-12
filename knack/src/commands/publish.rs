@@ -39,6 +39,12 @@ pub struct PublishArgs {
     pub minor: bool,
     #[arg(long)]
     pub patch: bool,
+
+    /// Pack + validate locally and print the file manifest. Skips the API
+    /// upload entirely. Useful for verifying what would be sent before
+    /// burning a version number.
+    #[arg(long)]
+    pub dry_run: bool,
 }
 
 pub async fn run(args: PublishArgs, client: ApiClient, mode: OutputMode) -> CliResult<()> {
@@ -57,6 +63,10 @@ pub async fn run(args: PublishArgs, client: ApiClient, mode: OutputMode) -> CliR
         };
         emit_err(mode, &err);
         return Err(err);
+    }
+
+    if args.dry_run {
+        return dry_run(&args, &dir, mode);
     }
 
     let skill = match api_skills::find_by_slug(&client, &args.slug).await? {
@@ -154,6 +164,75 @@ pub async fn run(args: PublishArgs, client: ApiClient, mode: OutputMode) -> CliR
 enum PublishOutcome {
     Bundle(api_skills::SkillVersion),
     Legacy,
+}
+
+/// `--dry-run` path: validate the folder locally, pack the tarball, print the
+/// manifest, return success. Never touches the network. Lets agents verify
+/// what would be sent before burning a server-side version number.
+fn dry_run(args: &PublishArgs, dir: &Path, mode: OutputMode) -> CliResult<()> {
+    let report = crate::skill_validators::validate_skill_folder(dir);
+    if !report.is_ok() {
+        let summary = report.summary();
+        let err = CliError::User {
+            code: "SKILL_FORMAT_INVALID".into(),
+            message: format!("skill validation failed. issues: {summary}"),
+            hint: Some("fix the listed fields in meta.knack.yaml / SKILL.md and re-run".into()),
+        };
+        if mode.json {
+            let env = serde_json::json!({
+                "$schema": "knack://cli/v1",
+                "ok": false,
+                "error": {
+                    "code": "SKILL_FORMAT_INVALID",
+                    "message": err.to_string(),
+                    "details": report.into_details(),
+                    "hint": "fix the listed fields in meta.knack.yaml / SKILL.md and re-run",
+                },
+            });
+            println!("{env}");
+        } else {
+            emit_err(mode, &err);
+        }
+        return Err(err);
+    }
+
+    let packed = match pack_skill(dir) {
+        Ok(p) => p,
+        Err(e) => {
+            emit_err(mode, &e);
+            return Err(e);
+        }
+    };
+
+    let target_semver = args.as_version.clone().unwrap_or_else(|| "(server-assigned)".into());
+
+    emit_ok(
+        mode,
+        json!({
+            "dry_run": true,
+            "slug": args.slug,
+            "from": dir.display().to_string(),
+            "target_version": target_semver,
+            "tarball_sha256": packed.sha256,
+            "tarball_size": packed.bytes.len(),
+            "files": packed.manifest.files.iter()
+                .map(|(p, sha)| json!({ "path": p, "sha256": sha }))
+                .collect::<Vec<_>>(),
+        }),
+        || {
+            println!(
+                "✓ dry-run ok — {} files, {} bytes, sha256 {}",
+                packed.manifest.files.len(),
+                packed.bytes.len(),
+                &packed.sha256,
+            );
+            println!("would publish {} → version {}", args.slug, target_semver);
+            for (p, sha) in &packed.manifest.files {
+                println!("  {}  {p}", &sha[..12]);
+            }
+        },
+    );
+    Ok(())
 }
 
 async fn try_publish_with_bundle(
