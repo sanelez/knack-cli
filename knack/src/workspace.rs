@@ -28,8 +28,8 @@ use std::io;
 use std::path::{Path, PathBuf};
 
 const WORKSPACE_DIR_NAME: &str = ".knack";
-const SKILLS_SUBDIR: &str = "skills";
-const DRAFTS_SUBDIR: &str = "drafts";
+pub const SKILLS_SUBDIR: &str = "skills";
+pub const DRAFTS_SUBDIR: &str = "drafts";
 const README_FILE: &str = "README.md";
 const GITIGNORE_FILE: &str = ".gitignore";
 

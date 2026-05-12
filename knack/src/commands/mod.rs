@@ -18,6 +18,7 @@ pub mod pull;
 pub mod rate;
 pub mod run;
 pub mod search;
+pub mod sync;
 pub mod team;
 pub mod username;
 pub mod validate;
@@ -99,6 +100,10 @@ pub enum Command {
     /// Rate a public skill (1-5 stars). Pass --clear to remove your rating.
     Rate(rate::RateArgs),
 
+    /// Refresh per-skill agent shims (Claude SKILL.md, Cursor .mdc, AGENTS.md blocks).
+    /// Runs automatically after `pull` / `publish`; this command is for manual recovery.
+    Sync(sync::SyncArgs),
+
     /// Team management: create / list / show / invite / accept / role
     #[command(subcommand)]
     Team(team::TeamCmd),
@@ -171,6 +176,7 @@ pub async fn dispatch(cmd: Command, client: ApiClient, mode: OutputMode) -> CliR
         Command::Username(a) => username::run(a, client, mode).await,
         Command::Search(a) => search::run(a, client, mode).await,
         Command::Rate(a) => rate::run(a, client, mode).await,
+        Command::Sync(a) => sync::run(a, client.config, mode),
         Command::Team(c) => team::run(c, client, mode).await,
     }
 }

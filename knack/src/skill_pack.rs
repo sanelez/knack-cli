@@ -320,6 +320,71 @@ pub fn packed_s3_key(skill_id: &str, version: &str) -> String {
     format!("skills/{skill_id}/{version}.tar.gz")
 }
 
+/// Minimal slice of a SKILL.md frontmatter — just the fields downstream
+/// shim writers need. We don't model the whole Anthropic Skills schema
+/// here; that's the server's job. If a SKILL.md author drops in extra
+/// fields they get ignored, which matches the spec's tolerant-reader
+/// posture.
+#[derive(Debug, Clone, Deserialize, Serialize, Default, PartialEq, Eq)]
+pub struct SkillFrontmatter {
+    /// Slug. Required by the Anthropic spec; we tolerate missing values
+    /// for backward compat (caller substitutes from the filesystem
+    /// position when this is None).
+    pub name: Option<String>,
+    /// Description sentence — what gets read on agent session start and
+    /// triggers progressive disclosure. Required for Claude Code shim
+    /// writers to do anything useful.
+    pub description: Option<String>,
+}
+
+/// Lift YAML frontmatter from the head of a SKILL.md body.
+///
+/// The shape we expect: file starts with `---\n`, has a YAML block,
+/// closes with another `---\n` line, then continues with markdown.
+/// Anything that doesn't open with `---` is treated as no-frontmatter
+/// and returns `Ok(None)`. Malformed YAML returns `Err` so callers can
+/// distinguish "no frontmatter to read" from "this skill is broken."
+pub fn parse_skill_md_frontmatter(
+    skill_md: &str,
+) -> Result<Option<SkillFrontmatter>, CliError> {
+    // Tolerate BOM + leading blank lines; Anthropic's reference writers
+    // sometimes prepend a UTF-8 BOM and most editors round-trip it.
+    let trimmed = skill_md.trim_start_matches('\u{feff}').trim_start();
+    if !trimmed.starts_with("---") {
+        return Ok(None);
+    }
+    // Find the closing `---` on its own line. We require a newline before
+    // the closing fence to avoid greedy-matching `---` inside the body.
+    let after_open = match trimmed.find('\n') {
+        Some(i) => &trimmed[i + 1..],
+        None => return Ok(None),
+    };
+    let mut end_offset: Option<usize> = None;
+    for (i, line) in after_open.split_inclusive('\n').enumerate() {
+        let s = line.trim_end_matches(['\r', '\n']);
+        if s == "---" || s == "..." {
+            // Compute byte offset of this line's start in after_open.
+            let mut byte = 0usize;
+            for (j, l) in after_open.split_inclusive('\n').enumerate() {
+                if j == i {
+                    break;
+                }
+                byte += l.len();
+            }
+            end_offset = Some(byte);
+            break;
+        }
+    }
+    let Some(end_offset) = end_offset else {
+        // No closing fence — not a parseable frontmatter block.
+        return Ok(None);
+    };
+    let yaml_body = &after_open[..end_offset];
+    let parsed: SkillFrontmatter = serde_yaml::from_str(yaml_body)
+        .map_err(|e| CliError::Internal(format!("SKILL.md frontmatter parse: {e}")))?;
+    Ok(Some(parsed))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

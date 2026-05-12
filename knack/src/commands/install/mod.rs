@@ -16,6 +16,8 @@
 
 pub mod block;
 pub mod detect;
+pub mod installed;
+pub mod shim;
 pub mod targets;
 
 use std::path::PathBuf;
@@ -26,6 +28,7 @@ use serde_json::json;
 use crate::errors::{CliError, CliResult};
 use crate::output::{emit_err, emit_ok, OutputMode};
 
+use installed::Scope;
 use targets::{AgentTarget, ConfigStyle};
 
 #[derive(Debug, Args)]
@@ -151,6 +154,17 @@ fn apply(targets: &[&'static AgentTarget], dry_run: bool) -> Vec<TargetOutcome> 
                 Ok(false) => Status::UpToDate,
                 Err(e) => Status::Skipped(format!("write failed: {e}")),
             };
+
+            // Record the install so `sync` knows which agents to refresh
+            // after every pull. We do this on `Wrote` *and* `UpToDate`
+            // because the latter means "already installed" which is
+            // exactly the state the record should reflect. Scope is
+            // inferred from whether the config_path lives under HOME.
+            if matches!(status, Status::Wrote | Status::UpToDate) {
+                let scope = infer_scope(&path);
+                let _ = installed::add(t.name, scope, path.clone());
+            }
+
             TargetOutcome {
                 name: t.name,
                 display: t.display,
@@ -162,12 +176,39 @@ fn apply(targets: &[&'static AgentTarget], dry_run: bool) -> Vec<TargetOutcome> 
         .collect()
 }
 
+/// Best-effort scope guess. Used only to tag the `installed.json` entry
+/// so `sync` knows whether to refresh workspace shims or HOME shims
+/// after each pull. False-positives are cheap (we just rewrite the
+/// shim in the other scope on the next sync).
+fn infer_scope(path: &std::path::Path) -> Scope {
+    if let Some(home) = dirs::home_dir() {
+        if path.starts_with(&home) {
+            return Scope::Home;
+        }
+    }
+    Scope::Project
+}
+
 fn run_uninstall(mode: OutputMode) -> CliResult<()> {
     let mut removed: Vec<(&'static str, String)> = Vec::new();
+    let mut shims_removed: usize = 0;
     for t in targets::TARGETS {
         let Some(path) = (t.config_path)() else {
             continue;
         };
+
+        // Remove every per-skill shim for this target before stripping
+        // the install block. Run for both possible scopes — the user
+        // may have installed at HOME and pulled some skills as
+        // workspace-local, so both scopes may have shims.
+        for scope in [Scope::Home, Scope::Project] {
+            if let Some(root) = (t.shim_root)(scope) {
+                if let Ok(n) = shim::remove_all_shims(t, &root) {
+                    shims_removed += n;
+                }
+            }
+        }
+
         let did = match t.style {
             ConfigStyle::WriteFile => path.exists() && std::fs::remove_file(&path).is_ok(),
             ConfigStyle::AppendBlock => block::remove(&path).unwrap_or(false),
@@ -175,20 +216,29 @@ fn run_uninstall(mode: OutputMode) -> CliResult<()> {
         if did {
             removed.push((t.name, path.display().to_string()));
         }
+
+        // Whether or not the install block was present, drop the
+        // installed.json entry so future syncs don't target a runtime
+        // we just walked away from.
+        let _ = installed::remove(t.name);
     }
     if mode.json {
         emit_ok(
             mode,
             json!({
                 "removed": removed.iter().map(|(n, p)| json!({ "target": n, "path": p })).collect::<Vec<_>>(),
+                "shims_removed": shims_removed,
             }),
             || {},
         );
-    } else if removed.is_empty() {
-        println!("Nothing to uninstall (no knack block found in any known target).");
+    } else if removed.is_empty() && shims_removed == 0 {
+        println!("Nothing to uninstall (no knack block or shims found in any known target).");
     } else {
         for (n, p) in &removed {
             println!("Removed {n} → {p}");
+        }
+        if shims_removed > 0 {
+            println!("Removed {shims_removed} per-skill shim(s).");
         }
     }
     Ok(())

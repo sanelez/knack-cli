@@ -33,6 +33,29 @@ pub fn autodetect() -> Option<&'static AgentTarget> {
     None
 }
 
+/// Every locally-installed agent, not just the first. Used by
+/// `knack sync --all-detected` to refresh shims for multi-runtime
+/// users (e.g. someone with Claude Code AND Cursor installed) without
+/// requiring them to have run `knack install` for each one.
+///
+/// Order matches `TARGETS`; the same target never appears twice. Excludes
+/// `generic` for the same reason `autodetect` does — it's a safety-net,
+/// not a runtime.
+pub fn list_installed() -> Vec<&'static AgentTarget> {
+    let mut out: Vec<&'static AgentTarget> = Vec::new();
+    for t in TARGETS {
+        if t.name == "generic" {
+            continue;
+        }
+        let env_hit = t.env_markers.iter().any(|k| std::env::var(k).is_ok());
+        let bin_hit = t.binary_markers.iter().any(|b| binary_on_path(b));
+        if env_hit || bin_hit {
+            out.push(t);
+        }
+    }
+    out
+}
+
 fn binary_on_path(name: &str) -> bool {
     let path = match std::env::var_os("PATH") {
         Some(p) => p,

@@ -140,6 +140,23 @@ pub async fn run(args: PullArgs, client: ApiClient, mode: OutputMode) -> CliResu
         ),
     );
 
+    // Best-effort: register this skill with whichever agent runtime(s)
+    // are recorded as installed on this machine. Failures (Redis hiccup,
+    // unwritable .claude/, malformed frontmatter) get folded into the
+    // report under `shims[].status = "skipped"` rather than turning the
+    // pull into a non-zero exit — the canonical file is already on disk
+    // and `knack sync` can recover later.
+    let scope = if args.global {
+        crate::commands::install::installed::Scope::Home
+    } else {
+        crate::commands::install::installed::Scope::Project
+    };
+    let shim_report = crate::commands::sync::sync_one_skill(
+        &skill.slug,
+        scope,
+        &client.config,
+    );
+
     emit_ok(
         mode,
         json!({
@@ -149,9 +166,22 @@ pub async fn run(args: PullArgs, client: ApiClient, mode: OutputMode) -> CliResu
             "path": dir,
             "files_written": written,
             "mode": mode_label,
+            "shims": {
+                "written": shim_report.written,
+                "up_to_date": shim_report.up_to_date,
+                "removed": shim_report.removed,
+                "skipped": shim_report.skipped,
+            },
         }),
         || {
             println!("✓ {}@{} → {}", skill.slug, version.version, dir.display());
+            for r in &shim_report.written {
+                println!("  ↪ {} shim → {}", r.agent, r.path);
+            }
+            for r in &shim_report.skipped {
+                let reason = r.reason.as_deref().unwrap_or("?");
+                println!("  ↪ {} shim skipped ({reason})", r.agent);
+            }
         },
     );
     Ok(())

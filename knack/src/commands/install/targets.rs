@@ -11,6 +11,8 @@
 
 use std::path::PathBuf;
 
+use super::installed::Scope;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ConfigStyle {
     /// Append a delimited markdown block to the file. Idempotent: re-runs
@@ -19,6 +21,29 @@ pub enum ConfigStyle {
     /// Write the whole file (used for Cursor `.mdc` rules which need
     /// frontmatter and are owned end-to-end by knack).
     WriteFile,
+}
+
+/// How per-skill shims for this target are written.
+///
+/// Distinct from [`ConfigStyle`] — that one governs the one-time install
+/// block (`knack exists, run knack info`). Shims are the per-pulled-skill
+/// registrations that make the runtime's native discovery surface the
+/// skill on session start.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ShimStyle {
+    /// Runtime natively reads Anthropic Skills (Claude Code, Cowork).
+    /// One folder per skill at `<root>/<slug>/SKILL.md` with frontmatter.
+    NativeSkill,
+    /// Runtime natively reads rule files keyed by description (Cursor).
+    /// One file per skill at `<root>/knack-<slug>.mdc`.
+    NativeRule,
+    /// Runtime reads a free-form context file (AGENTS.md, CONVENTIONS.md).
+    /// We splice a small per-skill block into that file.
+    TextBlock,
+    /// Runtime has no useful discovery mechanism for individual skills.
+    /// `generic` is the only target that uses this — the install block
+    /// telling the agent "knack exists" is the best we can do.
+    None,
 }
 
 pub struct AgentTarget {
@@ -31,11 +56,18 @@ pub struct AgentTarget {
     pub env_markers: &'static [&'static str],
     /// Binaries that, if present on PATH, indicate this agent is installed.
     pub binary_markers: &'static [&'static str],
-    /// Where to write. Returns `None` if the OS doesn't have a reasonable
-    /// destination (e.g. no home directory).
+    /// Where to write the install block. Returns `None` if the OS doesn't
+    /// have a reasonable destination (e.g. no home directory).
     pub config_path: fn() -> Option<PathBuf>,
-    /// How to write the file.
+    /// How to write the install block.
     pub style: ConfigStyle,
+    /// How to write per-skill shims.
+    pub shim_style: ShimStyle,
+    /// Where per-skill shims live, scoped to home (HOME-shared pool) vs
+    /// project (workspace-local). Returns `None` when this combination
+    /// doesn't make sense (e.g. `generic` has no native shim story; some
+    /// project-only runtimes return `None` for `Home`).
+    pub shim_root: fn(Scope) -> Option<PathBuf>,
 }
 
 /// Ordered registry. Autodetect walks this list top-down; first env hit wins,
@@ -53,6 +85,12 @@ pub static TARGETS: &[AgentTarget] = &[
         binary_markers: &["claude"],
         config_path: claude_path,
         style: ConfigStyle::AppendBlock,
+        // Claude Code is the only May-2026 runtime with native Anthropic
+        // Skills discovery. Skills land at <root>/.claude/skills/<slug>/
+        // SKILL.md and are picked up via progressive disclosure on
+        // session start.
+        shim_style: ShimStyle::NativeSkill,
+        shim_root: claude_shim_root,
     },
     AgentTarget {
         name: "codex",
@@ -61,6 +99,8 @@ pub static TARGETS: &[AgentTarget] = &[
         binary_markers: &["codex"],
         config_path: codex_path,
         style: ConfigStyle::AppendBlock,
+        shim_style: ShimStyle::TextBlock,
+        shim_root: codex_shim_root,
     },
     AgentTarget {
         name: "cursor",
@@ -69,6 +109,10 @@ pub static TARGETS: &[AgentTarget] = &[
         binary_markers: &["cursor"],
         config_path: cursor_path,
         style: ConfigStyle::WriteFile,
+        // Cursor has native rule discovery (`.cursor/rules/*.mdc`); per
+        // confirmed choice we ship one .mdc per skill.
+        shim_style: ShimStyle::NativeRule,
+        shim_root: cursor_shim_root,
     },
     AgentTarget {
         name: "windsurf",
@@ -77,6 +121,8 @@ pub static TARGETS: &[AgentTarget] = &[
         binary_markers: &["windsurf"],
         config_path: windsurf_path,
         style: ConfigStyle::AppendBlock,
+        shim_style: ShimStyle::TextBlock,
+        shim_root: windsurf_shim_root,
     },
     AgentTarget {
         name: "cline",
@@ -88,6 +134,8 @@ pub static TARGETS: &[AgentTarget] = &[
         binary_markers: &[],
         config_path: cline_path,
         style: ConfigStyle::AppendBlock,
+        shim_style: ShimStyle::TextBlock,
+        shim_root: cline_shim_root,
     },
     AgentTarget {
         name: "continue",
@@ -98,6 +146,8 @@ pub static TARGETS: &[AgentTarget] = &[
         binary_markers: &[],
         config_path: continue_path,
         style: ConfigStyle::AppendBlock,
+        shim_style: ShimStyle::TextBlock,
+        shim_root: continue_shim_root,
     },
     AgentTarget {
         name: "kiro",
@@ -106,6 +156,8 @@ pub static TARGETS: &[AgentTarget] = &[
         binary_markers: &["kiro"],
         config_path: kiro_path,
         style: ConfigStyle::AppendBlock,
+        shim_style: ShimStyle::TextBlock,
+        shim_root: kiro_shim_root,
     },
     AgentTarget {
         name: "trae",
@@ -114,6 +166,8 @@ pub static TARGETS: &[AgentTarget] = &[
         binary_markers: &["trae"],
         config_path: trae_path,
         style: ConfigStyle::AppendBlock,
+        shim_style: ShimStyle::TextBlock,
+        shim_root: trae_shim_root,
     },
     AgentTarget {
         name: "aider",
@@ -122,6 +176,8 @@ pub static TARGETS: &[AgentTarget] = &[
         binary_markers: &["aider"],
         config_path: aider_path,
         style: ConfigStyle::AppendBlock,
+        shim_style: ShimStyle::TextBlock,
+        shim_root: aider_shim_root,
     },
     AgentTarget {
         name: "gemini",
@@ -130,6 +186,8 @@ pub static TARGETS: &[AgentTarget] = &[
         binary_markers: &["gemini"],
         config_path: gemini_path,
         style: ConfigStyle::AppendBlock,
+        shim_style: ShimStyle::TextBlock,
+        shim_root: gemini_shim_root,
     },
     AgentTarget {
         name: "opencode",
@@ -138,6 +196,8 @@ pub static TARGETS: &[AgentTarget] = &[
         binary_markers: &["opencode"],
         config_path: opencode_path,
         style: ConfigStyle::AppendBlock,
+        shim_style: ShimStyle::TextBlock,
+        shim_root: opencode_shim_root,
     },
     AgentTarget {
         name: "factory",
@@ -146,6 +206,8 @@ pub static TARGETS: &[AgentTarget] = &[
         binary_markers: &["droid"],
         config_path: factory_path,
         style: ConfigStyle::AppendBlock,
+        shim_style: ShimStyle::TextBlock,
+        shim_root: factory_shim_root,
     },
     AgentTarget {
         name: "amp",
@@ -154,6 +216,8 @@ pub static TARGETS: &[AgentTarget] = &[
         binary_markers: &["amp"],
         config_path: amp_path,
         style: ConfigStyle::AppendBlock,
+        shim_style: ShimStyle::TextBlock,
+        shim_root: amp_shim_root,
     },
     AgentTarget {
         name: "generic",
@@ -162,6 +226,11 @@ pub static TARGETS: &[AgentTarget] = &[
         binary_markers: &[],
         config_path: generic_path,
         style: ConfigStyle::AppendBlock,
+        // `generic` is the AGENTS.md fallback — there's no specific
+        // runtime to register with, so the install block is the entire
+        // surface. Per-skill shims would just duplicate it.
+        shim_style: ShimStyle::None,
+        shim_root: |_| None,
     },
 ];
 
@@ -266,3 +335,59 @@ fn generic_path() -> Option<PathBuf> {
     // %APPDATA%\agents\AGENTS.md.
     dirs::config_dir().map(|c| c.join("agents").join("AGENTS.md"))
 }
+
+// ─── Shim-root resolvers ───────────────────────────────────────────────────
+//
+// For NativeSkill / NativeRule styles, the shim root is a *directory* under
+// which we write one folder (or .mdc file) per pulled skill. For TextBlock
+// targets the "root" is the same file we already wrote the install block
+// into — shims are sentinel-bracketed blocks appended after the install
+// block. Both home and project scopes are supported where meaningful.
+
+fn claude_shim_root(scope: Scope) -> Option<PathBuf> {
+    let dir = match scope {
+        Scope::Home => {
+            if let Ok(d) = std::env::var("CLAUDE_CONFIG_DIR") {
+                PathBuf::from(d).join("skills")
+            } else {
+                dirs::home_dir()?.join(".claude").join("skills")
+            }
+        }
+        // Workspace: Claude Code also scans <cwd>/.claude/skills/ for
+        // project-scoped tools. CWD is the right anchor — the shim
+        // writer is invoked from the same process as `knack pull`, which
+        // already resolved its workspace via discovery.
+        Scope::Project => std::env::current_dir().ok()?.join(".claude").join("skills"),
+    };
+    Some(dir)
+}
+
+fn cursor_shim_root(scope: Scope) -> Option<PathBuf> {
+    let dir = match scope {
+        // Cursor is fundamentally per-project — rules live in
+        // <workspace>/.cursor/rules. HOME scope is supported only as a
+        // fallback for users who have Cursor installed but no current
+        // project; rare, but consistent with how cursor_path picks a
+        // location.
+        Scope::Home => dirs::home_dir()?.join(".cursor").join("rules"),
+        Scope::Project => std::env::current_dir().ok()?.join(".cursor").join("rules"),
+    };
+    Some(dir)
+}
+
+// TextBlock targets: shim root == the install-block file itself. The
+// shim writer for TextBlock splices `<!-- knack:skill:<slug>:start -->`
+// pairs into that file. We surface the file path here so shim sync
+// has a single uniform interface.
+
+fn codex_shim_root(_: Scope) -> Option<PathBuf> { codex_path() }
+fn windsurf_shim_root(_: Scope) -> Option<PathBuf> { windsurf_path() }
+fn cline_shim_root(_: Scope) -> Option<PathBuf> { cline_path() }
+fn continue_shim_root(_: Scope) -> Option<PathBuf> { continue_path() }
+fn kiro_shim_root(_: Scope) -> Option<PathBuf> { kiro_path() }
+fn trae_shim_root(_: Scope) -> Option<PathBuf> { trae_path() }
+fn aider_shim_root(_: Scope) -> Option<PathBuf> { aider_path() }
+fn gemini_shim_root(_: Scope) -> Option<PathBuf> { gemini_path() }
+fn opencode_shim_root(_: Scope) -> Option<PathBuf> { opencode_path() }
+fn factory_shim_root(_: Scope) -> Option<PathBuf> { factory_path() }
+fn amp_shim_root(_: Scope) -> Option<PathBuf> { amp_path() }
