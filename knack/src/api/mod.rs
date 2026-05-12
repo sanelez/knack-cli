@@ -32,7 +32,6 @@ struct ApiErrorObject {
     code: String,
     message: String,
     #[serde(default)]
-    #[allow(dead_code)]
     details: Option<Value>,
 }
 
@@ -80,6 +79,37 @@ fn map_api_error_bytes(status: StatusCode, bytes: Option<&[u8]>) -> CliError {
     )
 }
 
+/// Render a `details` value into a short user-facing summary. Recognizes the
+/// `{"issues": [{"path", "message"}]}` shape produced by SKILL_FORMAT_INVALID
+/// and VALIDATION_ERROR; falls back to compact JSON for anything else.
+fn format_details(details: Option<&Value>) -> Option<String> {
+    let details = details?;
+    if let Some(issues) = details.get("issues").and_then(|v| v.as_array()) {
+        if issues.is_empty() {
+            return None;
+        }
+        let parts: Vec<String> = issues
+            .iter()
+            .filter_map(|i| {
+                let path = i.get("path").and_then(|v| v.as_str()).unwrap_or("");
+                let msg = i.get("message").and_then(|v| v.as_str()).unwrap_or("");
+                if path.is_empty() && msg.is_empty() {
+                    None
+                } else if path.is_empty() {
+                    Some(msg.to_string())
+                } else {
+                    Some(format!("{path}: {msg}"))
+                }
+            })
+            .collect();
+        if parts.is_empty() {
+            return None;
+        }
+        return Some(format!("issues: {}", parts.join("; ")));
+    }
+    None
+}
+
 #[derive(Debug, Deserialize)]
 struct FastApiValidationBody {
     detail: Vec<FastApiValidationItem>,
@@ -120,7 +150,7 @@ impl FastApiValidationBody {
         if parts.is_empty() {
             "request validation failed".into()
         } else {
-            format!("request validation failed — {}", parts.join("; "))
+            format!("request validation failed. {}", parts.join("; "))
         }
     }
 }
@@ -128,7 +158,16 @@ impl FastApiValidationBody {
 /// Translate a status + JSON body into the right [`CliError`] variant.
 fn map_api_error(status: StatusCode, body: Option<ApiErrorBody>) -> CliError {
     let (code, message) = match body {
-        Some(b) => (b.error.code, b.error.message),
+        Some(b) => {
+            let mut msg = b.error.message;
+            // Fold structured details (e.g. SKILL_FORMAT_INVALID issues) into
+            // the message so the user sees the specific fields that failed
+            // instead of a generic "skill format validation failed".
+            if let Some(extra) = format_details(b.error.details.as_ref()) {
+                msg = format!("{msg}. {extra}");
+            }
+            (b.error.code, msg)
+        }
         None => (
             "UNKNOWN".to_string(),
             format!("server returned {status} with no envelope"),
