@@ -12,12 +12,28 @@ pub struct Skill {
     pub id: String,
     pub slug: String,
     pub name: String,
+    #[serde(default)]
+    pub description: String,
     pub scope: String,
     pub owner_user_id: Option<String>,
     pub owner_team_id: Option<String>,
+    #[serde(default)]
+    pub owner_username: Option<String>,
     pub current_version_id: Option<String>,
     pub current_version_semver: Option<String>,
+    #[serde(default)]
+    pub published_at: Option<DateTime<Utc>>,
     pub created_at: DateTime<Utc>,
+}
+
+/// Response shape of `GET /skills/resolve?author=<u>&slug=<s>`.
+#[derive(Debug, Clone, Deserialize)]
+pub struct SkillResolve {
+    pub skill_id: String,
+    pub owner_username: String,
+    pub slug: String,
+    pub current_version_id: Option<String>,
+    pub current_version_semver: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -113,10 +129,24 @@ pub async fn get(client: &ApiClient, skill_id: &str) -> Result<Skill, CliError> 
         .await
 }
 
-/// Find a skill by slug. Falls back to scanning the user's accessible skills
-/// since the API doesn't (yet) expose a slug→id endpoint. Cheap for free-tier
-/// users (≤3 skills) and good-enough for v0.
+/// Find a skill by slug. Two paths:
+///
+///   * `@author/slug` — calls `GET /skills/resolve` (anonymous endpoint).
+///     This is the marketplace path; works for public skills you don't own.
+///   * bare `slug` — scans the caller's accessible skills (personal + team).
+///     Kept for the "pull my own draft" workflow; bounded by the user's
+///     own library size, not the marketplace.
 pub async fn find_by_slug(client: &ApiClient, slug: &str) -> Result<Option<Skill>, CliError> {
+    if let Some((author, slug_only)) = parse_handle_slug(slug) {
+        let resolved = match resolve(client, &author, &slug_only).await {
+            Ok(r) => r,
+            Err(CliError::NotFound(_)) => return Ok(None),
+            Err(e) => return Err(e),
+        };
+        let skill = get(client, &resolved.skill_id).await?;
+        return Ok(Some(skill));
+    }
+
     let mut cursor: Option<String> = None;
     loop {
         let page = list(client, None, cursor.as_deref(), 200).await?;
@@ -130,6 +160,34 @@ pub async fn find_by_slug(client: &ApiClient, slug: &str) -> Result<Option<Skill
         }
         cursor = page.next_cursor;
     }
+}
+
+/// Parse `@author/slug` (or `author/slug`) into its parts. Returns `None`
+/// for bare-slug inputs so callers fall through to the legacy scan path.
+pub fn parse_handle_slug(input: &str) -> Option<(String, String)> {
+    let trimmed = input.trim().trim_start_matches('@');
+    let (author, slug) = trimmed.split_once('/')?;
+    if author.is_empty() || slug.is_empty() {
+        return None;
+    }
+    Some((author.to_string(), slug.to_string()))
+}
+
+/// Resolve `@author/slug` to a public skill row via the marketplace
+/// resolver endpoint. No auth required.
+pub async fn resolve(
+    client: &ApiClient,
+    author: &str,
+    slug: &str,
+) -> Result<SkillResolve, CliError> {
+    let author = author.to_string();
+    let slug = slug.to_string();
+    client
+        .send_json::<SkillResolve>(|c| {
+            Ok(c.request(Method::GET, "/skills/resolve")?
+                .query(&[("author", &author), ("slug", &slug)]))
+        })
+        .await
 }
 
 pub async fn get_version(

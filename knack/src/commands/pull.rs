@@ -142,13 +142,25 @@ pub async fn run(args: PullArgs, client: ApiClient, mode: OutputMode) -> CliResu
     Ok(())
 }
 
-/// Splits `monthly-close@1.0` into `("monthly-close", Some("1.0"))`. A bare
-/// slug returns `(slug, None)`.
+/// Splits a pull target into `(slug-or-handle, version)`.
+///
+/// Accepted shapes:
+///
+///   * `slug`                     → `(slug, None)`
+///   * `slug@1.2.0`                → `(slug, Some("1.2.0"))`
+///   * `@author/slug`             → `("@author/slug", None)`
+///   * `@author/slug@1.2.0`        → `("@author/slug", Some("1.2.0"))`
+///
+/// The leading `@` of a handle is preserved so `find_by_slug` can route
+/// to the marketplace resolver. Only an `@` that appears *after* a
+/// leading-handle prefix counts as the version separator.
 fn parse_slug_at_version(s: &str) -> (&str, Option<&str>) {
-    match s.split_once('@') {
-        Some((slug, ver)) => (slug, Some(ver)),
-        None => (s, None),
+    let lookup_start = usize::from(s.starts_with('@'));
+    if let Some(rel) = s[lookup_start..].find('@') {
+        let abs = lookup_start + rel;
+        return (&s[..abs], Some(&s[abs + 1..]));
     }
+    (s, None)
 }
 
 /// Idempotent write — returns the path iff bytes changed (or file was new).
@@ -181,6 +193,22 @@ mod tests {
     fn parse_v_prefix_is_left_intact_for_normalize() {
         // Server normalizes `v1.0` → `1.0.0`. CLI doesn't pre-strip.
         assert_eq!(parse_slug_at_version("foo@v1.0"), ("foo", Some("v1.0")));
+    }
+
+    #[test]
+    fn parse_handle_slug_no_version() {
+        assert_eq!(
+            parse_slug_at_version("@KnackOfficial/monthly-close"),
+            ("@KnackOfficial/monthly-close", None)
+        );
+    }
+
+    #[test]
+    fn parse_handle_slug_with_version() {
+        assert_eq!(
+            parse_slug_at_version("@KnackOfficial/monthly-close@1.2.0"),
+            ("@KnackOfficial/monthly-close", Some("1.2.0"))
+        );
     }
 
     #[test]

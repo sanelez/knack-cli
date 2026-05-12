@@ -36,7 +36,8 @@ pub enum Command {
     /// List skills you can read
     List(list::ListArgs),
 
-    /// Pull a skill folder to disk
+    /// Pull a skill folder to disk. Accepts `<slug>`, `<slug>@<semver>`,
+    /// `@<author>/<slug>`, or `@<author>/<slug>@<semver>`.
     Pull(pull::PullArgs),
 
     /// Diff two versions of a skill (or local vs cloud)
