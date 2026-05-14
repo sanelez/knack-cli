@@ -560,4 +560,45 @@ mod tests {
             "skills/abc-123/1.0.0.tar.gz"
         );
     }
+
+    #[test]
+    fn parse_frontmatter_returns_none_when_no_fence() {
+        let body = "# Hello\n\nNo frontmatter here.\n";
+        let parsed = parse_skill_md_frontmatter(body).unwrap();
+        assert!(parsed.is_none());
+    }
+
+    #[test]
+    fn parse_frontmatter_lifts_name_and_description() {
+        let body =
+            "---\nname: monthly-close\ndescription: Reconciles every Monday.\n---\n\n# Body\n";
+        let parsed = parse_skill_md_frontmatter(body).unwrap().unwrap();
+        assert_eq!(parsed.name.as_deref(), Some("monthly-close"));
+        assert_eq!(
+            parsed.description.as_deref(),
+            Some("Reconciles every Monday.")
+        );
+    }
+
+    #[test]
+    fn parse_frontmatter_tolerates_bom_and_blank_lines() {
+        let body = "\u{feff}\n---\nname: x\ndescription: y\n---\n\nBody\n";
+        let parsed = parse_skill_md_frontmatter(body).unwrap().unwrap();
+        assert_eq!(parsed.name.as_deref(), Some("x"));
+        assert_eq!(parsed.description.as_deref(), Some("y"));
+    }
+
+    #[test]
+    fn parse_frontmatter_ignores_extra_fields() {
+        let body = "---\nname: x\ndescription: y\nversion: 1.2.3\nallowed-tools:\n  - Bash\n---\n\nBody\n";
+        let parsed = parse_skill_md_frontmatter(body).unwrap().unwrap();
+        assert_eq!(parsed.name.as_deref(), Some("x"));
+    }
+
+    #[test]
+    fn parse_frontmatter_no_close_fence_returns_none() {
+        let body = "---\nname: x\n(forgot the closing fence)\n";
+        let parsed = parse_skill_md_frontmatter(body).unwrap();
+        assert!(parsed.is_none());
+    }
 }

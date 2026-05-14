@@ -261,11 +261,12 @@ mod tests {
         let root = tempdir().unwrap();
         let home = PathBuf::from("/home/jane/.knack/skills");
 
+        // No `.knack/` exists yet, so discovery fails and the fallback
+        // path is just `<cwd>/.knack/skills` (not canonicalized).
         let resolved = resolve_skills_root(root.path(), false, None, &home);
-        let canonical_root = root.path().canonicalize().unwrap();
         assert_eq!(
             resolved,
-            canonical_root.join(WORKSPACE_DIR_NAME).join(SKILLS_SUBDIR),
+            root.path().join(WORKSPACE_DIR_NAME).join(SKILLS_SUBDIR),
         );
         let _ = env::current_dir();
     }
@@ -293,6 +294,10 @@ mod tests {
         let home = PathBuf::from("/nonexistent");
         let resolved =
             resolve_existing_skill_dir("foo", root.path(), &home).unwrap();
-        assert_eq!(resolved, drafts);
+        // `discover_workspace_root` canonicalizes on Unix (no-op) and
+        // emits a `\\?\` UNC-prefixed path on Windows. Compare against
+        // the same canonical form so the test passes everywhere.
+        let canonical_drafts = drafts.canonicalize().unwrap();
+        assert_eq!(resolved.canonicalize().unwrap(), canonical_drafts);
     }
 }

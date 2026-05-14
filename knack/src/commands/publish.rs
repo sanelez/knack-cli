@@ -163,6 +163,18 @@ pub async fn run(args: PublishArgs, client: ApiClient, mode: OutputMode) -> CliR
         }
     };
 
+    // After publishing, also make sure the local agent shims know about
+    // this skill. A brand-new publish typically means the user just
+    // authored it in `.knack/drafts/<slug>/` — the corresponding
+    // canonical `.knack/skills/<slug>/` may not even exist yet. We pass
+    // the draft dir directly to the shim renderer so the local agent
+    // can discover the skill immediately in the current session.
+    let shim_report = crate::commands::sync::sync_one_skill(
+        &args.slug,
+        crate::commands::install::installed::Scope::Project,
+        &client.config,
+    );
+
     emit_ok(
         mode,
         json!({
@@ -172,8 +184,19 @@ pub async fn run(args: PublishArgs, client: ApiClient, mode: OutputMode) -> CliR
             "parent_version_id": parent_id,
             "packed_s3_key": new_version.packed_s3_key,
             "from": dir,
+            "shims": {
+                "written": shim_report.written,
+                "up_to_date": shim_report.up_to_date,
+                "removed": shim_report.removed,
+                "skipped": shim_report.skipped,
+            },
         }),
-        || println!("✓ {}@{} published", args.slug, new_version.version),
+        || {
+            println!("✓ {}@{} published", args.slug, new_version.version);
+            for r in &shim_report.written {
+                println!("  ↪ {} shim → {}", r.agent, r.path);
+            }
+        },
     );
     Ok(())
 }

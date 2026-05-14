@@ -70,7 +70,10 @@ pub fn run(args: SyncArgs, client_config: Config, mode: OutputMode) -> CliResult
         Err(e) => return Err(e),
     };
     if targets.is_empty() {
-        chatter(mode, "no installed agents to sync. run `knack install` first, or pass --all-detected.".into());
+        chatter(
+            mode,
+            "no installed agents to sync. run `knack install` first, or pass --all-detected.",
+        );
         emit_ok(
             mode,
             json!({"written": [], "up_to_date": [], "removed": [], "skipped": []}),
