@@ -123,7 +123,7 @@ pub fn sync_one_skill(slug: &str, scope: Scope, client_config: &Config) -> SyncR
             Some(t) => t,
             None => continue,
         };
-        match write_one(target, &skill_dir, slug, false) {
+        match write_one(target, &skill_dir, slug, scope, false) {
             Ok(WriteOutcome::Wrote { path }) => {
                 report.written.push(ShimResult {
                     agent: entry.slug.clone(),
@@ -184,7 +184,7 @@ fn sync_targets(
                     path: shim_target_path(target, &root, slug),
                 }
             } else {
-                match write_one(target, &canonical_dir, slug, false) {
+                match write_one(target, &canonical_dir, slug, scope, false) {
                     Ok(o) => o,
                     Err(e) => WriteOutcome::Skipped {
                         reason: e.to_string(),
@@ -272,11 +272,14 @@ enum WriteOutcome {
     Skipped { reason: String, path: Option<PathBuf> },
 }
 
-/// Render + write a single skill's shim for one target.
+/// Render + write a single skill's shim for one target. The shim's
+/// destination is determined by `scope` (the pull / sync scope), not
+/// by where the agent's install block lives.
 fn write_one(
     target: &'static AgentTarget,
     canonical_dir: &Path,
     slug: &str,
+    scope: Scope,
     _dry_run: bool,
 ) -> Result<WriteOutcome, CliError> {
     let canonical_md = canonical_dir.join("SKILL.md");
@@ -294,7 +297,7 @@ fn write_one(
 
     match target.shim_style {
         ShimStyle::NativeSkill => {
-            let Some(root) = (target.shim_root)(detect_scope_for(target)) else {
+            let Some(root) = (target.shim_root)(scope) else {
                 return Ok(WriteOutcome::Skipped {
                     reason: "no shim root for this scope".into(),
                     path: None,
@@ -311,7 +314,7 @@ fn write_one(
             })
         }
         ShimStyle::NativeRule => {
-            let Some(root) = (target.shim_root)(detect_scope_for(target)) else {
+            let Some(root) = (target.shim_root)(scope) else {
                 return Ok(WriteOutcome::Skipped {
                     reason: "no shim root for this scope".into(),
                     path: None,
@@ -328,7 +331,7 @@ fn write_one(
             })
         }
         ShimStyle::TextBlock => {
-            let Some(file) = (target.shim_root)(detect_scope_for(target)) else {
+            let Some(file) = (target.shim_root)(scope) else {
                 return Ok(WriteOutcome::Skipped {
                     reason: "no shim file for this scope".into(),
                     path: None,
@@ -542,7 +545,32 @@ fn dedupe(mut v: Vec<&'static AgentTarget>) -> Vec<&'static AgentTarget> {
 
 fn resolved_entries_for_scope(scope: Scope) -> std::io::Result<Vec<AgentEntry>> {
     let all = installed::list()?;
-    Ok(all.into_iter().filter(|e| e.scope == scope).collect())
+    Ok(all
+        .into_iter()
+        .filter(|e| matches_scope(e, scope))
+        .collect())
+}
+
+/// Whether an installed-agent entry should receive a shim for a pull at
+/// the given scope.
+///
+/// The install record's `scope` field tracks where the install BLOCK
+/// landed (HOME-anchored config path vs workspace-anchored). It does
+/// NOT constrain where per-skill shims go: the *pull* scope determines
+/// the shim's destination via the target's `shim_root(pull_scope)`.
+/// That decoupling is what lets a globally installed Knack still write
+/// a workspace-scoped per-skill shim when the user pulls in a repo —
+/// the shim lands in `<repo>/.claude/skills/`, never bleeding into
+/// other projects, while the install block at `~/.claude/CLAUDE.md`
+/// stays untouched.
+///
+/// So `matches_scope` is just "is this agent registered and capable of
+/// receiving shims at all?" — scope matching is irrelevant.
+fn matches_scope(entry: &AgentEntry, _pull_scope: Scope) -> bool {
+    let Some(t) = targets::find(&entry.slug) else {
+        return false;
+    };
+    !matches!(t.shim_style, ShimStyle::None)
 }
 
 fn resolve_skills_root(scope: Scope, client_config: &Config) -> PathBuf {
@@ -576,22 +604,6 @@ fn list_skills(root: &Path) -> Vec<String> {
     }
     out.sort();
     out
-}
-
-/// For convenience inside `write_one` — the scope a target's shim_root
-/// should resolve for. Today every target writes to its own scope; this
-/// is a hook for future per-target overrides if we need them.
-fn detect_scope_for(_: &AgentTarget) -> Scope {
-    // sync_one_skill passes the scope explicitly; write_one uses this
-    // only when called from sync_targets (full reconcile) — where scope
-    // matches the project/global flag the user passed. We use the cwd
-    // heuristic here: if cwd is inside a workspace, Project; else Home.
-    let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-    if discover_workspace_root(&cwd).is_some() {
-        Scope::Project
-    } else {
-        Scope::Home
-    }
 }
 
 fn emit_report(mode: OutputMode, report: &SyncReport, dry_run: bool) {

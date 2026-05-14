@@ -31,8 +31,10 @@ pub enum ConfigStyle {
 /// skill on session start.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ShimStyle {
-    /// Runtime natively reads Anthropic Skills (Claude Code, Cowork).
-    /// One folder per skill at `<root>/<slug>/SKILL.md` with frontmatter.
+    /// Runtime natively reads Anthropic Skills (Claude Code, Codex,
+    /// Cline, Kiro, Windsurf, Trae, Gemini CLI, OpenCode, Factory, Amp,
+    /// and Cowork as of May 2026). One folder per skill at
+    /// `<root>/<slug>/SKILL.md` with frontmatter.
     NativeSkill,
     /// Runtime natively reads rule files keyed by description (Cursor).
     /// One file per skill at `<root>/knack-<slug>.mdc`.
@@ -85,10 +87,6 @@ pub static TARGETS: &[AgentTarget] = &[
         binary_markers: &["claude"],
         config_path: claude_path,
         style: ConfigStyle::AppendBlock,
-        // Claude Code is the only May-2026 runtime with native Anthropic
-        // Skills discovery. Skills land at <root>/.claude/skills/<slug>/
-        // SKILL.md and are picked up via progressive disclosure on
-        // session start.
         shim_style: ShimStyle::NativeSkill,
         shim_root: claude_shim_root,
     },
@@ -99,7 +97,10 @@ pub static TARGETS: &[AgentTarget] = &[
         binary_markers: &["codex"],
         config_path: codex_path,
         style: ConfigStyle::AppendBlock,
-        shim_style: ShimStyle::TextBlock,
+        // Codex reads `.agents/skills/` (workspace) and
+        // `$HOME/.agents/skills/` (user), not `.codex/skills/`. See
+        // developers.openai.com/codex/skills.
+        shim_style: ShimStyle::NativeSkill,
         shim_root: codex_shim_root,
     },
     AgentTarget {
@@ -110,7 +111,11 @@ pub static TARGETS: &[AgentTarget] = &[
         config_path: cursor_path,
         style: ConfigStyle::WriteFile,
         // Cursor has native rule discovery (`.cursor/rules/*.mdc`); per
-        // confirmed choice we ship one .mdc per skill.
+        // confirmed choice we ship one .mdc per skill. Cursor 2.4 also
+        // reads `.cursor/skills/` natively, but it also reads
+        // `.claude/skills/` and `.agents/skills/` for compat, so the
+        // claude+codex NativeSkill writes already cover the skill folder
+        // path. The .mdc keeps the description-match rule UX intact.
         shim_style: ShimStyle::NativeRule,
         shim_root: cursor_shim_root,
     },
@@ -121,7 +126,8 @@ pub static TARGETS: &[AgentTarget] = &[
         binary_markers: &["windsurf"],
         config_path: windsurf_path,
         style: ConfigStyle::AppendBlock,
-        shim_style: ShimStyle::TextBlock,
+        // Native SKILL.md at `.windsurf/skills/` since 2026-03-09.
+        shim_style: ShimStyle::NativeSkill,
         shim_root: windsurf_shim_root,
     },
     AgentTarget {
@@ -134,13 +140,15 @@ pub static TARGETS: &[AgentTarget] = &[
         binary_markers: &[],
         config_path: cline_path,
         style: ConfigStyle::AppendBlock,
-        shim_style: ShimStyle::TextBlock,
+        // Native SKILL.md at `.cline/skills/` (workspace) and
+        // `~/.cline/skills/` (global) since Cline 3.48.
+        shim_style: ShimStyle::NativeSkill,
         shim_root: cline_shim_root,
     },
     AgentTarget {
         name: "continue",
-        // Continue.dev: same story as Cline. Write a discrete file under
-        // .continue/rules/ which the extension auto-loads at activation.
+        // Continue.dev: same install story as Cline. No native SKILL.md
+        // support as of May 2026 — rules-only — so we stay TextBlock.
         display: "Continue.dev",
         env_markers: &[],
         binary_markers: &[],
@@ -156,7 +164,9 @@ pub static TARGETS: &[AgentTarget] = &[
         binary_markers: &["kiro"],
         config_path: kiro_path,
         style: ConfigStyle::AppendBlock,
-        shim_style: ShimStyle::TextBlock,
+        // Native SKILL.md at `~/.kiro/skills/` / `.kiro/skills/` since
+        // Kiro 0.9.
+        shim_style: ShimStyle::NativeSkill,
         shim_root: kiro_shim_root,
     },
     AgentTarget {
@@ -166,7 +176,8 @@ pub static TARGETS: &[AgentTarget] = &[
         binary_markers: &["trae"],
         config_path: trae_path,
         style: ConfigStyle::AppendBlock,
-        shim_style: ShimStyle::TextBlock,
+        // Native SKILL.md at `.trae/skills/`.
+        shim_style: ShimStyle::NativeSkill,
         shim_root: trae_shim_root,
     },
     AgentTarget {
@@ -176,6 +187,8 @@ pub static TARGETS: &[AgentTarget] = &[
         binary_markers: &["aider"],
         config_path: aider_path,
         style: ConfigStyle::AppendBlock,
+        // Aider has no native SKILL.md (only the third-party `aider-skills`
+        // package, not in mainline as of May 2026).
         shim_style: ShimStyle::TextBlock,
         shim_root: aider_shim_root,
     },
@@ -186,7 +199,10 @@ pub static TARGETS: &[AgentTarget] = &[
         binary_markers: &["gemini"],
         config_path: gemini_path,
         style: ConfigStyle::AppendBlock,
-        shim_style: ShimStyle::TextBlock,
+        // Native SKILL.md since Gemini CLI v0.25 (2026-01-20). Reads both
+        // `~/.gemini/skills/` and `~/.agents/skills/`; we target the
+        // cross-agent path so a single write services Codex + Gemini + Amp.
+        shim_style: ShimStyle::NativeSkill,
         shim_root: gemini_shim_root,
     },
     AgentTarget {
@@ -196,7 +212,9 @@ pub static TARGETS: &[AgentTarget] = &[
         binary_markers: &["opencode"],
         config_path: opencode_path,
         style: ConfigStyle::AppendBlock,
-        shim_style: ShimStyle::TextBlock,
+        // Native SKILL.md at `.opencode/skills/` (workspace) and
+        // `~/.config/opencode/skills/` (user).
+        shim_style: ShimStyle::NativeSkill,
         shim_root: opencode_shim_root,
     },
     AgentTarget {
@@ -206,7 +224,9 @@ pub static TARGETS: &[AgentTarget] = &[
         binary_markers: &["droid"],
         config_path: factory_path,
         style: ConfigStyle::AppendBlock,
-        shim_style: ShimStyle::TextBlock,
+        // Native SKILL.md at `.factory/skills/` (workspace) and
+        // `~/.factory/skills/` (personal).
+        shim_style: ShimStyle::NativeSkill,
         shim_root: factory_shim_root,
     },
     AgentTarget {
@@ -216,7 +236,9 @@ pub static TARGETS: &[AgentTarget] = &[
         binary_markers: &["amp"],
         config_path: amp_path,
         style: ConfigStyle::AppendBlock,
-        shim_style: ShimStyle::TextBlock,
+        // Native SKILL.md at `.agents/skills/` (workspace) and
+        // `~/.config/agents/skills/` (user).
+        shim_style: ShimStyle::NativeSkill,
         shim_root: amp_shim_root,
     },
     AgentTarget {
@@ -242,6 +264,28 @@ pub fn names() -> Vec<&'static str> {
     TARGETS.iter().map(|t| t.name).collect()
 }
 
+// ─── HOME / config overrides ───────────────────────────────────────────────
+//
+// `dirs::home_dir()` and `dirs::config_dir()` return real machine paths.
+// For end-to-end shim tests we need to redirect those at the temp dir so
+// a test run never clobbers `~/.agents/skills/` or `~/.config/opencode/`.
+// `KNACK_TEST_HOME` / `KNACK_TEST_CONFIG` are recognized only when set.
+// They are not documented for users — they exist for the test harness.
+
+fn home_dir() -> Option<PathBuf> {
+    if let Ok(d) = std::env::var("KNACK_TEST_HOME") {
+        return Some(PathBuf::from(d));
+    }
+    dirs::home_dir()
+}
+
+fn config_dir() -> Option<PathBuf> {
+    if let Ok(d) = std::env::var("KNACK_TEST_CONFIG") {
+        return Some(PathBuf::from(d));
+    }
+    dirs::config_dir()
+}
+
 // ─── Config-path resolvers ─────────────────────────────────────────────────
 
 fn claude_path() -> Option<PathBuf> {
@@ -249,91 +293,95 @@ fn claude_path() -> Option<PathBuf> {
     if let Ok(dir) = std::env::var("CLAUDE_CONFIG_DIR") {
         return Some(PathBuf::from(dir).join("CLAUDE.md"));
     }
-    dirs::home_dir().map(|h| h.join(".claude").join("CLAUDE.md"))
+    home_dir().map(|h| h.join(".claude").join("CLAUDE.md"))
 }
 
 fn codex_path() -> Option<PathBuf> {
     if let Ok(dir) = std::env::var("CODEX_HOME") {
         return Some(PathBuf::from(dir).join("AGENTS.md"));
     }
-    dirs::home_dir().map(|h| h.join(".codex").join("AGENTS.md"))
+    home_dir().map(|h| h.join(".codex").join("AGENTS.md"))
 }
 
+// Every config_path resolver below is HOME-anchored. The whole table
+// is global-by-default: one paste of `knack install` registers Knack
+// once for the user, and the per-skill shims land in whichever scope
+// `knack pull` runs at (workspace if invoked inside a workspace, HOME
+// otherwise). For a handful of agents (cursor, windsurf, trae, amp)
+// the HOME path is best-effort — those agents don't have a documented
+// HOME load location, and a non-technical user pasting our install
+// will get a marker file in the conventional place but may need to
+// flick a setting in the agent UI to actually pick it up. We prefer
+// "file appears at the expected path" to "silently does nothing."
+
 fn cursor_path() -> Option<PathBuf> {
-    // Cursor's 2026 rules format is project-scoped at .cursor/rules/*.mdc.
-    // If the user runs `knack install` inside a git repo, put it there. If
-    // not, fall back to a user-scope location they can copy from later.
-    if let Ok(cwd) = std::env::current_dir() {
-        if cwd.join(".git").exists() {
-            return Some(cwd.join(".cursor").join("rules").join("knack.mdc"));
-        }
-    }
-    dirs::home_dir().map(|h| h.join(".cursor").join("rules").join("knack.mdc"))
+    // Cursor's user rules are configured via Settings → Rules for User
+    // (no documented load file), so HOME is best-effort. We write to
+    // ~/.cursor/rules/knack.mdc so the file exists for the user to
+    // paste/import into their settings.
+    home_dir().map(|h| h.join(".cursor").join("rules").join("knack.mdc"))
 }
 
 fn aider_path() -> Option<PathBuf> {
-    // Aider reads CONVENTIONS.md at the repo root when invoked with --read.
-    std::env::current_dir().ok().map(|c| c.join("CONVENTIONS.md"))
+    // Aider has no auto-load from HOME (issue #3433). We write
+    // ~/CONVENTIONS.md so the file is present; users add
+    // `read: ~/CONVENTIONS.md` to ~/.aider.conf.yml for auto-pickup.
+    home_dir().map(|h| h.join("CONVENTIONS.md"))
 }
 
 fn windsurf_path() -> Option<PathBuf> {
-    // Windsurf (Cascade) auto-loads AGENTS.md at the project root as an
-    // always-on rule. Falls back to CWD if not in a git repo.
-    std::env::current_dir().ok().map(|c| c.join("AGENTS.md"))
+    // Windsurf's documented user-scope rules file (codeium issue #157).
+    home_dir().map(|h| {
+        h.join(".codeium")
+            .join("windsurf")
+            .join("memories")
+            .join("global_rules.md")
+    })
 }
 
 fn cline_path() -> Option<PathBuf> {
-    // Cline auto-loads every file in .clinerules/. Writing a dedicated
-    // knack.md keeps our block scoped and out of the way of the user's own
-    // .clinerules content.
-    std::env::current_dir()
-        .ok()
-        .map(|c| c.join(".clinerules").join("knack.md"))
+    // Cline auto-loads ~/.cline/rules/ globally.
+    home_dir().map(|h| h.join(".cline").join("rules").join("knack.md"))
 }
 
 fn continue_path() -> Option<PathBuf> {
-    // Continue.dev auto-loads every file in .continue/rules/.
-    std::env::current_dir()
-        .ok()
-        .map(|c| c.join(".continue").join("rules").join("knack.md"))
+    // Continue.dev auto-loads ~/.continue/rules/ globally.
+    home_dir().map(|h| h.join(".continue").join("rules").join("knack.md"))
 }
 
 fn kiro_path() -> Option<PathBuf> {
-    // Kiro (AWS) reads AGENTS.md from ~/.kiro/steering/ as global guidance
-    // applied to every workspace.
-    dirs::home_dir().map(|h| h.join(".kiro").join("steering").join("AGENTS.md"))
+    home_dir().map(|h| h.join(".kiro").join("steering").join("AGENTS.md"))
 }
 
 fn trae_path() -> Option<PathBuf> {
-    // Trae (ByteDance) uses .trae/rules/project_rules.md as the project
-    // rules file. AppendBlock preserves any existing user content.
-    std::env::current_dir()
-        .ok()
-        .map(|c| c.join(".trae").join("rules").join("project_rules.md"))
+    // Trae's documented personal rules file. No formal "global" Trae
+    // location exists; this is the closest equivalent.
+    home_dir().map(|h| h.join(".trae").join("rules").join("user_rules.md"))
 }
 
 fn gemini_path() -> Option<PathBuf> {
-    dirs::home_dir().map(|h| h.join(".gemini").join("GEMINI.md"))
+    home_dir().map(|h| h.join(".gemini").join("GEMINI.md"))
 }
 
 fn opencode_path() -> Option<PathBuf> {
-    dirs::home_dir().map(|h| h.join(".opencode").join("AGENTS.md"))
+    // OpenCode personal config: $OPENCODE_CONFIG_DIR or ~/.config/opencode/.
+    config_dir().map(|c| c.join("opencode").join("AGENTS.md"))
 }
 
 fn factory_path() -> Option<PathBuf> {
-    dirs::home_dir().map(|h| h.join(".factory").join("AGENTS.md"))
+    home_dir().map(|h| h.join(".factory").join("AGENTS.md"))
 }
 
 fn amp_path() -> Option<PathBuf> {
-    // Amp uses $XDG_CONFIG_HOME/AGENTS.md (Linux/macOS) / %APPDATA%\AGENTS.md
-    // (Windows). `dirs::config_dir()` returns the right thing on every OS.
-    dirs::config_dir().map(|c| c.join("AGENTS.md"))
+    // Amp has no documented HOME AGENTS.md, but ~/.config/agents/ is the
+    // user-scope Amp directory (matches the skills/ sibling).
+    config_dir().map(|c| c.join("agents").join("AGENTS.md"))
 }
 
 fn generic_path() -> Option<PathBuf> {
     // The agents.md proposed standard: $XDG_CONFIG_HOME/agents/AGENTS.md or
     // %APPDATA%\agents\AGENTS.md.
-    dirs::config_dir().map(|c| c.join("agents").join("AGENTS.md"))
+    config_dir().map(|c| c.join("agents").join("AGENTS.md"))
 }
 
 // ─── Shim-root resolvers ───────────────────────────────────────────────────
@@ -350,7 +398,7 @@ fn claude_shim_root(scope: Scope) -> Option<PathBuf> {
             if let Ok(d) = std::env::var("CLAUDE_CONFIG_DIR") {
                 PathBuf::from(d).join("skills")
             } else {
-                dirs::home_dir()?.join(".claude").join("skills")
+                home_dir()?.join(".claude").join("skills")
             }
         }
         // Workspace: Claude Code also scans <cwd>/.claude/skills/ for
@@ -362,15 +410,105 @@ fn claude_shim_root(scope: Scope) -> Option<PathBuf> {
     Some(dir)
 }
 
-fn cursor_shim_root(scope: Scope) -> Option<PathBuf> {
+fn codex_shim_root(scope: Scope) -> Option<PathBuf> {
+    // Codex skill paths per developers.openai.com/codex/skills:
+    //   $CWD/.agents/skills, $REPO_ROOT/.agents/skills,
+    //   $HOME/.agents/skills, /etc/codex/skills.
+    // Note: NOT ~/.codex/skills/ — that path does not exist for Codex.
     let dir = match scope {
-        // Cursor is fundamentally per-project — rules live in
-        // <workspace>/.cursor/rules. HOME scope is supported only as a
-        // fallback for users who have Cursor installed but no current
-        // project; rare, but consistent with how cursor_path picks a
-        // location.
-        Scope::Home => dirs::home_dir()?.join(".cursor").join("rules"),
+        Scope::Home => home_dir()?.join(".agents").join("skills"),
+        Scope::Project => std::env::current_dir().ok()?.join(".agents").join("skills"),
+    };
+    Some(dir)
+}
+
+fn cursor_shim_root(scope: Scope) -> Option<PathBuf> {
+    // Cursor's HOME rules-on-disk path is undocumented; we still write to
+    // ~/.cursor/rules/ so per-skill .mdc files exist for the user to
+    // paste/import into Cursor settings.
+    let dir = match scope {
+        Scope::Home => home_dir()?.join(".cursor").join("rules"),
         Scope::Project => std::env::current_dir().ok()?.join(".cursor").join("rules"),
+    };
+    Some(dir)
+}
+
+fn windsurf_shim_root(scope: Scope) -> Option<PathBuf> {
+    // Windsurf added .windsurf/skills/ on 2026-03-09. No documented
+    // HOME-scope skill path; we write to ~/.windsurf/skills/ as a
+    // conventional best-effort.
+    let dir = match scope {
+        Scope::Home => home_dir()?.join(".windsurf").join("skills"),
+        Scope::Project => std::env::current_dir().ok()?.join(".windsurf").join("skills"),
+    };
+    Some(dir)
+}
+
+fn cline_shim_root(scope: Scope) -> Option<PathBuf> {
+    // Cline 3.48 reads .cline/skills/ workspace + ~/.cline/skills/ global.
+    let dir = match scope {
+        Scope::Home => home_dir()?.join(".cline").join("skills"),
+        Scope::Project => std::env::current_dir().ok()?.join(".cline").join("skills"),
+    };
+    Some(dir)
+}
+
+fn kiro_shim_root(scope: Scope) -> Option<PathBuf> {
+    // Kiro 0.9: ~/.kiro/skills/ global, .kiro/skills/ workspace.
+    let dir = match scope {
+        Scope::Home => home_dir()?.join(".kiro").join("skills"),
+        Scope::Project => std::env::current_dir().ok()?.join(".kiro").join("skills"),
+    };
+    Some(dir)
+}
+
+fn trae_shim_root(scope: Scope) -> Option<PathBuf> {
+    // Trae: .trae/skills/ per docs.trae.ai/ide/skills. No documented
+    // HOME-scope skill path; we write to ~/.trae/skills/ as a best-effort.
+    let dir = match scope {
+        Scope::Home => home_dir()?.join(".trae").join("skills"),
+        Scope::Project => std::env::current_dir().ok()?.join(".trae").join("skills"),
+    };
+    Some(dir)
+}
+
+fn gemini_shim_root(scope: Scope) -> Option<PathBuf> {
+    // Gemini CLI reads both ~/.gemini/skills/ and ~/.agents/skills/. We
+    // pick ~/.gemini/skills/ as the unambiguous Gemini-specific location
+    // (the cross-agent ~/.agents/skills/ is already covered by the codex
+    // shim, so a user with both installed gets one write per location).
+    let dir = match scope {
+        Scope::Home => home_dir()?.join(".gemini").join("skills"),
+        Scope::Project => std::env::current_dir().ok()?.join(".gemini").join("skills"),
+    };
+    Some(dir)
+}
+
+fn opencode_shim_root(scope: Scope) -> Option<PathBuf> {
+    // OpenCode: .opencode/skills/ workspace, ~/.config/opencode/skills/ user.
+    let dir = match scope {
+        Scope::Home => config_dir()?.join("opencode").join("skills"),
+        Scope::Project => std::env::current_dir().ok()?.join(".opencode").join("skills"),
+    };
+    Some(dir)
+}
+
+fn factory_shim_root(scope: Scope) -> Option<PathBuf> {
+    // Factory droid: ~/.factory/skills/ personal, .factory/skills/ workspace.
+    let dir = match scope {
+        Scope::Home => home_dir()?.join(".factory").join("skills"),
+        Scope::Project => std::env::current_dir().ok()?.join(".factory").join("skills"),
+    };
+    Some(dir)
+}
+
+fn amp_shim_root(scope: Scope) -> Option<PathBuf> {
+    // Amp: .agents/skills/ workspace, ~/.config/agents/skills/ user. The
+    // workspace path overlaps with codex's; same content written twice is
+    // idempotent (sigil + same body) so no harm.
+    let dir = match scope {
+        Scope::Home => config_dir()?.join("agents").join("skills"),
+        Scope::Project => std::env::current_dir().ok()?.join(".agents").join("skills"),
     };
     Some(dir)
 }
@@ -380,14 +518,5 @@ fn cursor_shim_root(scope: Scope) -> Option<PathBuf> {
 // pairs into that file. We surface the file path here so shim sync
 // has a single uniform interface.
 
-fn codex_shim_root(_: Scope) -> Option<PathBuf> { codex_path() }
-fn windsurf_shim_root(_: Scope) -> Option<PathBuf> { windsurf_path() }
-fn cline_shim_root(_: Scope) -> Option<PathBuf> { cline_path() }
 fn continue_shim_root(_: Scope) -> Option<PathBuf> { continue_path() }
-fn kiro_shim_root(_: Scope) -> Option<PathBuf> { kiro_path() }
-fn trae_shim_root(_: Scope) -> Option<PathBuf> { trae_path() }
 fn aider_shim_root(_: Scope) -> Option<PathBuf> { aider_path() }
-fn gemini_shim_root(_: Scope) -> Option<PathBuf> { gemini_path() }
-fn opencode_shim_root(_: Scope) -> Option<PathBuf> { opencode_path() }
-fn factory_shim_root(_: Scope) -> Option<PathBuf> { factory_path() }
-fn amp_shim_root(_: Scope) -> Option<PathBuf> { amp_path() }
