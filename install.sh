@@ -74,6 +74,13 @@ case "$arch" in
 esac
 target="${arch_part}-${os_part}"
 
+# We don't ship a native arm64 macOS binary — M-series Macs run the
+# x86_64 build via Rosetta. Save 10×-multiplier macOS-runner minutes on
+# the release matrix; re-add native arm64 if startup latency matters.
+if [ "$target" = "aarch64-apple-darwin" ]; then
+    target="x86_64-apple-darwin"
+fi
+
 # Resolve version. R2 holds a small text file at /cli/latest/version.txt
 # (e.g. "0.1.0\n") that points at the current version.
 if [ "$VERSION" = "latest" ]; then
