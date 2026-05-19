@@ -21,6 +21,9 @@ Core commands:
 - Run a pulled skill against a task: `knack run <slug>`
 - Author a new skill from a user conversation: see the playbook below.
 - Authenticate once per machine: `knack auth login`
+- Organize (optional): `knack folder create <name>`, `knack folder mv <slug> <name>`,
+  `knack list --folder <name>`. Personal + team scopes only; public skills aren't foldered.
+  Same operations exist in the web workspace (Skill → Settings → Folder).
 
 For the full agent playbook (interview phases, authoring rules,
 publishing, iteration), run:

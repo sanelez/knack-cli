@@ -140,6 +140,29 @@ pub async fn run(args: PullArgs, client: ApiClient, mode: OutputMode) -> CliResu
         ),
     );
 
+    // Mirror the skill's server-side folder assignment into the
+    // workspace's `.knack/folders.json` so `knack list --folder=X` and
+    // `knack folder list` reflect cloud state without a second round
+    // trip. Best-effort: a failure here doesn't fail the pull (the
+    // folder name is recoverable via `knack folder list` later).
+    if let Some(ws) = crate::workspace::discover_workspace_root(&cwd) {
+        let mut idx = crate::workspace::read_folders_index(&ws).unwrap_or_default();
+        let changed = match (&skill.folder_id, &skill.folder_name) {
+            (Some(fid), Some(fname)) => crate::workspace::assign_to_folder(
+                &mut idx,
+                &skill.slug,
+                fid,
+                fname,
+                &skill.scope,
+                skill.owner_team_id.as_deref(),
+            ),
+            _ => crate::workspace::remove_from_folder(&mut idx, &skill.slug),
+        };
+        if changed {
+            let _ = crate::workspace::write_folders_index(&ws, &idx);
+        }
+    }
+
     // Best-effort: register this skill with whichever agent runtime(s)
     // are recorded as installed on this machine. Failures (Redis hiccup,
     // unwritable .claude/, malformed frontmatter) get folded into the

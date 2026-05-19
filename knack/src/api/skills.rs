@@ -130,6 +130,35 @@ pub async fn list(
         .await
 }
 
+/// Like [`list`] but with folder filtering. Pass ``folder_id`` to filter
+/// to one folder; pass ``unfiled = true`` to show only skills with no
+/// folder. Mutually exclusive — when both are set, ``folder_id`` wins.
+pub async fn list_with_folder(
+    client: &ApiClient,
+    scope: Option<&str>,
+    folder_id: Option<&str>,
+    unfiled: bool,
+    limit: u32,
+) -> Result<Page<Skill>, CliError> {
+    let scope = scope.map(str::to_string);
+    let folder_id = folder_id.map(str::to_string);
+    client
+        .send_json::<Page<Skill>>(|c| {
+            let mut rb = c.request(Method::GET, "/skills")?;
+            rb = rb.query(&[("limit", limit.to_string())]);
+            if let Some(s) = &scope {
+                rb = rb.query(&[("scope", s)]);
+            }
+            if let Some(fid) = &folder_id {
+                rb = rb.query(&[("folder_id", fid)]);
+            } else if unfiled {
+                rb = rb.query(&[("folder", "unfiled")]);
+            }
+            Ok(rb)
+        })
+        .await
+}
+
 pub async fn get(client: &ApiClient, skill_id: &str) -> Result<Skill, CliError> {
     let path = format!("/skills/{skill_id}");
     client
