@@ -327,6 +327,43 @@ pub async fn create_version(
         .await
 }
 
+/// POST /skills/{id}/fork — body fields are optional; the server defaults
+/// `slug` to the original's slug and `name` to the original's name.
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct SkillFork {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub slug: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+}
+
+/// Fork a public skill into the caller's personal library. Returns the
+/// new Skill row (scope=personal, version=0.1.0, with
+/// `forked_from_skill_id` pointing back at the original).
+pub async fn fork(
+    client: &ApiClient,
+    skill_id: &str,
+    body: &SkillFork,
+) -> Result<Skill, CliError> {
+    let path = format!("/skills/{skill_id}/fork");
+    let body = serde_json::to_value(body)?;
+    client
+        .send_json::<Skill>(|c| Ok(c.request(Method::POST, &path)?.json(&body)))
+        .await
+}
+
+/// Resolve a public skill via the marketplace detail endpoint and return
+/// `(skill_id, current_version_semver?)`. Used by `knack fork` so the
+/// caller can pass `@author/slug` without first scanning their library.
+pub async fn resolve_public(
+    client: &ApiClient,
+    author: &str,
+    slug: &str,
+) -> Result<(String, Option<String>), CliError> {
+    let detail = marketplace_detail(client, author, slug).await?;
+    Ok((detail.id, detail.current_version_semver))
+}
+
 /// V2a: request a presigned PUT URL for uploading a packed skill bundle.
 /// The CLI uploads tarball bytes directly to the returned ``upload_url``,
 /// then echoes ``s3_key`` back as ``packed_s3_key`` on the subsequent

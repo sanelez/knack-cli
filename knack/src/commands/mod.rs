@@ -7,6 +7,7 @@ pub mod debug;
 pub mod diff;
 pub mod docs;
 pub mod edit;
+pub mod fork;
 pub mod info;
 pub mod init;
 pub mod install;
@@ -59,6 +60,10 @@ pub enum Command {
 
     /// Bump the semver and push the local skill folder
     Publish(publish::PublishArgs),
+
+    /// Fork a public marketplace skill into your library. Server-side
+    /// copy of the latest version; pulls into `drafts/<slug>/` for edit.
+    Fork(fork::ForkArgs),
 
     /// Execute a skill against a fresh input
     Run(run::RunArgs),
@@ -163,6 +168,7 @@ pub async fn dispatch(cmd: Command, client: ApiClient, mode: OutputMode) -> CliR
         Command::Create(a) => create::run(a, client, mode).await,
         Command::Edit(a) => edit::run(a, client, mode).await,
         Command::Publish(a) => publish::run(a, client, mode).await,
+        Command::Fork(a) => fork::run(a, client, mode).await,
         Command::Run(a) => run::run(a, client, mode).await,
         Command::Mark(a) => mark::run(a, client, mode).await,
         Command::Docs(a) => docs::run(a, mode),
