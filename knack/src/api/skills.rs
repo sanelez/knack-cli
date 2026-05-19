@@ -23,6 +23,14 @@ pub struct Skill {
     pub current_version_semver: Option<String>,
     #[serde(default)]
     pub published_at: Option<DateTime<Utc>>,
+    /// Per-owner organizational folder. ``None`` when the skill is
+    /// unfiled (or when the server is an older deploy that doesn't yet
+    /// emit the field — ``#[serde(default)]`` keeps the CLI forward-
+    /// compatible).
+    #[serde(default)]
+    pub folder_id: Option<String>,
+    #[serde(default)]
+    pub folder_name: Option<String>,
     pub created_at: DateTime<Utc>,
 }
 
@@ -193,6 +201,9 @@ impl MarketplaceDetail {
             current_version_id: self.current_version_id,
             current_version_semver: self.current_version_semver,
             published_at: self.published_at,
+            // Public skills are never foldered (CHECK ``ck_skills_public_no_folder``).
+            folder_id: None,
+            folder_name: None,
             created_at: self.created_at,
         }
     }
@@ -280,6 +291,32 @@ pub async fn create(client: &ApiClient, body: &SkillCreate) -> Result<Skill, Cli
 /// `owner_user_id`. Going from team to personal pulls the skill back
 /// into the caller's personal library (caller becomes the new
 /// `owner_user_id`).
+/// Tiny double-Option serializer for ``folder_id`` on ``SkillUpdate``.
+///
+/// We need three states on the wire:
+///   * field omitted   → leave folder_id alone server-side
+///   * `"folder_id": "<uuid>"` → assign
+///   * `"folder_id": null`    → unfile
+///
+/// Outer ``Option`` distinguishes "supplied or not"; inner ``Option``
+/// is "null vs a value". ``skip_serializing_if`` skips the outer-None
+/// case; this helper handles the remaining two by serializing the
+/// inner Option directly.
+mod double_option {
+    use serde::{Serialize, Serializer};
+
+    pub fn serialize<S, T>(value: &Option<Option<T>>, ser: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+        T: Serialize,
+    {
+        match value {
+            Some(inner) => inner.serialize(ser),
+            None => ser.serialize_none(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Default, Serialize)]
 pub struct SkillUpdate {
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -290,6 +327,15 @@ pub struct SkillUpdate {
     pub scope: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub owner_team_id: Option<String>,
+    /// Folder assignment. Outer ``Option`` = "did the caller set this
+    /// field at all?"; inner ``Option`` = ``null`` (unfile) vs a
+    /// specific folder id.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        serialize_with = "double_option::serialize"
+    )]
+    pub folder_id: Option<Option<String>>,
 }
 
 /// Soft-delete a skill (server-side `DELETE /skills/{id}`). Owner-only.

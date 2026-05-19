@@ -27,11 +27,14 @@ use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 
+use serde::{Deserialize, Serialize};
+
 const WORKSPACE_DIR_NAME: &str = ".knack";
 pub const SKILLS_SUBDIR: &str = "skills";
 pub const DRAFTS_SUBDIR: &str = "drafts";
 const README_FILE: &str = "README.md";
 const GITIGNORE_FILE: &str = ".gitignore";
+pub const FOLDERS_INDEX_FILE: &str = "folders.json";
 
 // ─── workspace discovery ────────────────────────────────────────────────────
 
@@ -197,6 +200,138 @@ pub fn init_workspace(at: &Path) -> io::Result<PathBuf> {
 /// directory (has at least the two canonical subdirs).
 pub fn is_workspace(p: &Path) -> bool {
     p.is_dir() && p.join(SKILLS_SUBDIR).is_dir() && p.join(DRAFTS_SUBDIR).is_dir()
+}
+
+// ─── folders.json index ────────────────────────────────────────────────────
+//
+// Workspace-local cache of folder→slug assignments. The cloud is the
+// source of truth; this index is the on-disk reflection so `knack list
+// --folder=<name>` and `knack folder list` work offline-ish and so the
+// next `knack pull` doesn't have to refetch every skill just to rebuild
+// folder membership. Missing file is normal (no folders ever assigned in
+// this workspace) and reads as an empty index.
+
+/// One folder, with its current member slugs. ``scope`` mirrors the
+/// server-side ``Folder.scope`` (personal vs team) so the CLI can
+/// disambiguate without re-resolving the owner.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+pub struct FolderIndexEntry {
+    pub id: String,
+    pub name: String,
+    pub scope: String,
+    pub owner_team_id: Option<String>,
+    pub slugs: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct FoldersIndex {
+    #[serde(default)]
+    pub folders: Vec<FolderIndexEntry>,
+}
+
+/// Read the workspace's folder index. Missing file returns an empty
+/// index — folder assignment is a new feature, plenty of workspaces
+/// won't have it yet.
+pub fn read_folders_index(workspace: &Path) -> io::Result<FoldersIndex> {
+    let path = workspace.join(FOLDERS_INDEX_FILE);
+    match fs::read_to_string(&path) {
+        Ok(s) => serde_json::from_str(&s).map_err(|e| {
+            io::Error::new(io::ErrorKind::InvalidData, format!("{path:?}: {e}"))
+        }),
+        Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(FoldersIndex::default()),
+        Err(e) => Err(e),
+    }
+}
+
+/// Persist the folder index atomically (tempfile + rename in the same
+/// dir, mirroring ``commands/install/installed.rs`` so a crash mid-write
+/// never leaves a half-written JSON blob).
+pub fn write_folders_index(workspace: &Path, idx: &FoldersIndex) -> io::Result<()> {
+    fs::create_dir_all(workspace)?;
+    let path = workspace.join(FOLDERS_INDEX_FILE);
+    let body = serde_json::to_string_pretty(idx)
+        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+    let tmp = path.with_extension(format!("json.{}.tmp", std::process::id()));
+    fs::write(&tmp, body)?;
+    fs::rename(&tmp, &path)?;
+    Ok(())
+}
+
+/// Stamp a (folder_name, slug) pair into the index. Creates the folder
+/// entry if missing. Removes the slug from any other folder it was in
+/// (a skill belongs to at most one folder). No-op when ``folder_name``
+/// is None — caller should call ``remove_from_folder`` instead. Returns
+/// whether the index actually changed.
+pub fn assign_to_folder(
+    idx: &mut FoldersIndex,
+    slug: &str,
+    folder_id: &str,
+    folder_name: &str,
+    scope: &str,
+    owner_team_id: Option<&str>,
+) -> bool {
+    let mut changed = false;
+    // Strip this slug from any folder it was previously assigned to.
+    for entry in &mut idx.folders {
+        if entry.id == folder_id {
+            continue;
+        }
+        let before = entry.slugs.len();
+        entry.slugs.retain(|s| s != slug);
+        if entry.slugs.len() != before {
+            changed = true;
+        }
+    }
+
+    if let Some(entry) = idx.folders.iter_mut().find(|e| e.id == folder_id) {
+        // Update name/scope in case the server renamed since we last
+        // wrote — cheap reconciliation per pull.
+        if entry.name != folder_name {
+            entry.name = folder_name.to_string();
+            changed = true;
+        }
+        if entry.scope != scope {
+            entry.scope = scope.to_string();
+            changed = true;
+        }
+        if entry.owner_team_id.as_deref() != owner_team_id {
+            entry.owner_team_id = owner_team_id.map(str::to_string);
+            changed = true;
+        }
+        if !entry.slugs.iter().any(|s| s == slug) {
+            entry.slugs.push(slug.to_string());
+            changed = true;
+        }
+    } else {
+        idx.folders.push(FolderIndexEntry {
+            id: folder_id.to_string(),
+            name: folder_name.to_string(),
+            scope: scope.to_string(),
+            owner_team_id: owner_team_id.map(str::to_string),
+            slugs: vec![slug.to_string()],
+        });
+        changed = true;
+    }
+
+    // Stable order — folders sorted by name so `knack folder list` is
+    // predictable.
+    idx.folders.sort_by(|a, b| a.name.cmp(&b.name));
+    changed
+}
+
+/// Drop ``slug`` from every folder entry. Returns whether anything
+/// changed. Folder entries that become empty are kept around — they
+/// still exist server-side until `knack folder delete` removes them.
+pub fn remove_from_folder(idx: &mut FoldersIndex, slug: &str) -> bool {
+    let mut changed = false;
+    for entry in &mut idx.folders {
+        let before = entry.slugs.len();
+        entry.slugs.retain(|s| s != slug);
+        if entry.slugs.len() != before {
+            changed = true;
+        }
+    }
+    changed
 }
 
 #[cfg(test)]

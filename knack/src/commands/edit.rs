@@ -110,6 +110,7 @@ pub async fn run(args: EditArgs, client: ApiClient, mode: OutputMode) -> CliResu
         description: args.description.clone(),
         scope: args.scope.clone(),
         owner_team_id,
+        folder_id: None,
     };
 
     let updated = match api_skills::update(&client, &skill.id, &body).await {

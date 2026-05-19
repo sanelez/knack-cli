@@ -7,6 +7,7 @@ pub mod debug;
 pub mod diff;
 pub mod docs;
 pub mod edit;
+pub mod folder;
 pub mod fork;
 pub mod info;
 pub mod init;
@@ -112,6 +113,11 @@ pub enum Command {
     /// Team management: create / list / show / invite / accept / role
     #[command(subcommand)]
     Team(team::TeamCmd),
+
+    /// Folder management: organize personal and team skills into folders.
+    /// Public/marketplace skills are not foldered.
+    #[command(subcommand)]
+    Folder(folder::FolderCmd),
 }
 
 /// Cross-cutting flags every subcommand inherits.
@@ -184,5 +190,6 @@ pub async fn dispatch(cmd: Command, client: ApiClient, mode: OutputMode) -> CliR
         Command::Rate(a) => rate::run(a, client, mode).await,
         Command::Sync(a) => sync::run(a, client.config, mode),
         Command::Team(c) => team::run(c, client, mode).await,
+        Command::Folder(c) => folder::run(c, client, mode).await,
     }
 }
