@@ -271,8 +271,15 @@ pub async fn create(client: &ApiClient, body: &SkillCreate) -> Result<Skill, Cli
         .await
 }
 
-/// PATCH /skills/{skill_id} — update name/description/scope. Slug is
-/// immutable server-side. Fields omitted from the body are unchanged.
+/// PATCH /skills/{skill_id} — update name/description and flip/transfer
+/// scope. Slug is immutable server-side. Fields omitted from the body
+/// are unchanged.
+///
+/// When `scope` is `"team"`, `owner_team_id` must be set: the server
+/// transfers the skill into that team's library and clears
+/// `owner_user_id`. Going from team to personal pulls the skill back
+/// into the caller's personal library (caller becomes the new
+/// `owner_user_id`).
 #[derive(Debug, Clone, Default, Serialize)]
 pub struct SkillUpdate {
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -281,6 +288,8 @@ pub struct SkillUpdate {
     pub description: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub scope: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub owner_team_id: Option<String>,
 }
 
 /// Soft-delete a skill (server-side `DELETE /skills/{id}`). Owner-only.
