@@ -24,8 +24,18 @@ pub struct Folder {
     pub owner_user_id: Option<String>,
     #[serde(default)]
     pub owner_team_id: Option<String>,
+    /// Self-FK for nested folders. ``None`` means this is a root folder
+    /// for its owner. Clients can walk parent_folder_id back to the
+    /// root to render a breadcrumb without a second round-trip.
+    #[serde(default)]
+    pub parent_folder_id: Option<String>,
     #[serde(default)]
     pub skill_count: u32,
+    /// Live count of direct sub-folders (not recursive). ``None`` when
+    /// the server hasn't been upgraded to migration 0022 yet —
+    /// ``#[serde(default)]`` keeps the CLI forward-compatible.
+    #[serde(default)]
+    pub subfolder_count: Option<u32>,
     pub created_at: DateTime<Utc>,
 }
 
@@ -34,11 +44,21 @@ struct CreateBody<'a> {
     name: &'a str,
     #[serde(skip_serializing_if = "Option::is_none")]
     owner_team_id: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    parent_folder_id: Option<&'a str>,
 }
 
-#[derive(Debug, Serialize)]
+/// PATCH body for ``rename``/``reparent``. Both fields are optional;
+/// ``parent_folder_id`` is wrapped in ``Option<Option<&str>>`` so callers
+/// can distinguish "field omitted" (don't reparent) from "explicit
+/// null" (promote to root). When ``Some(None)`` is serialized as
+/// ``"parent_folder_id": null`` the server reads it as "move to root".
+#[derive(Debug, Serialize, Default)]
 struct UpdateBody<'a> {
-    name: &'a str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    name: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    parent_folder_id: Option<Option<&'a str>>,
 }
 
 pub async fn list(
@@ -66,8 +86,13 @@ pub async fn create(
     client: &ApiClient,
     name: &str,
     owner_team_id: Option<&str>,
+    parent_folder_id: Option<&str>,
 ) -> Result<Folder, CliError> {
-    let body = serde_json::to_value(CreateBody { name, owner_team_id })?;
+    let body = serde_json::to_value(CreateBody {
+        name,
+        owner_team_id,
+        parent_folder_id,
+    })?;
     client
         .send_json::<Folder>(|c| Ok(c.request(Method::POST, "/folders")?.json(&body)))
         .await
@@ -75,7 +100,31 @@ pub async fn create(
 
 pub async fn rename(client: &ApiClient, folder_id: &str, name: &str) -> Result<Folder, CliError> {
     let path = format!("/folders/{folder_id}");
-    let body = serde_json::to_value(UpdateBody { name })?;
+    let body = serde_json::to_value(UpdateBody {
+        name: Some(name),
+        ..Default::default()
+    })?;
+    client
+        .send_json::<Folder>(|c| Ok(c.request(Method::PATCH, &path)?.json(&body)))
+        .await
+}
+
+/// Move a folder under a new parent (or to the root when ``new_parent_id``
+/// is ``None``). Server-side validation:
+///   * new parent must exist
+///   * same owner as the folder being moved
+///   * no cycles (the new parent must not be a descendant of the folder)
+/// Any of those fail → 422 FOLDER_INVARIANT.
+pub async fn reparent(
+    client: &ApiClient,
+    folder_id: &str,
+    new_parent_id: Option<&str>,
+) -> Result<Folder, CliError> {
+    let path = format!("/folders/{folder_id}");
+    let body = serde_json::to_value(UpdateBody {
+        parent_folder_id: Some(new_parent_id),
+        ..Default::default()
+    })?;
     client
         .send_json::<Folder>(|c| Ok(c.request(Method::PATCH, &path)?.json(&body)))
         .await

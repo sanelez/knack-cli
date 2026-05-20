@@ -1,8 +1,11 @@
 //! `knack folder` subcommands.
 //!
-//!   knack folder create <name> [--team-id <uuid>]    → POST   /folders
+//!   knack folder create <name> [--team-id <uuid>] [--parent <id-or-name>]
+//!                                                    → POST   /folders
 //!   knack folder list   [--scope <s>] [--team-id <t>] → GET    /folders
 //!   knack folder rename <id-or-name> <new-name>      → PATCH  /folders/{id}
+//!   knack folder reparent <id-or-name> <parent-id-or-name|--root>
+//!                                                    → PATCH  /folders/{id}
 //!   knack folder delete <id-or-name>                  → DELETE /folders/{id}
 //!   knack folder mv <skill-slug> <folder-name>       → PATCH  /skills/{id}
 //!   knack folder mv <skill-slug> --unfiled           → PATCH  /skills/{id}
@@ -36,6 +39,8 @@ pub enum FolderCmd {
     List(ListArgs),
     /// Rename a folder
     Rename(RenameArgs),
+    /// Move a folder under a new parent (or to the root with --root)
+    Reparent(ReparentArgs),
     /// Delete a folder. Skills inside become unfiled.
     Delete(DeleteArgs),
     /// Move a skill into or out of a folder
@@ -48,6 +53,29 @@ pub struct CreateArgs {
     pub name: String,
     /// Team id. When set, creates a team folder. Caller must be a
     /// collaborator or owner of the team.
+    #[arg(long)]
+    pub team_id: Option<String>,
+    /// Parent folder id or name. When set, the new folder is nested
+    /// under that parent. The parent must have the same owner as the
+    /// new folder (a personal folder can't parent a team folder and
+    /// vice versa). Omit for a root-level folder.
+    #[arg(long)]
+    pub parent: Option<String>,
+}
+
+#[derive(Debug, Args)]
+pub struct ReparentArgs {
+    /// Folder to move. Either its UUID or its current name.
+    pub id_or_name: String,
+    /// New parent folder (UUID or name). Conflicts with --root.
+    #[arg(conflicts_with = "root")]
+    pub new_parent: Option<String>,
+    /// Move the folder back to root (no parent). Conflicts with new_parent.
+    #[arg(long, conflicts_with = "new_parent")]
+    pub root: bool,
+    /// Restrict the by-name lookup to a scope.
+    #[arg(long, value_parser = ["personal", "team"])]
+    pub scope: Option<String>,
     #[arg(long)]
     pub team_id: Option<String>,
 }
@@ -107,13 +135,41 @@ pub async fn run(cmd: FolderCmd, client: ApiClient, mode: OutputMode) -> CliResu
         FolderCmd::Create(a) => create(a, client, mode).await,
         FolderCmd::List(a) => list(a, client, mode).await,
         FolderCmd::Rename(a) => rename(a, client, mode).await,
+        FolderCmd::Reparent(a) => reparent(a, client, mode).await,
         FolderCmd::Delete(a) => delete(a, client, mode).await,
         FolderCmd::Mv(a) => mv(a, client, mode).await,
     }
 }
 
 async fn create(args: CreateArgs, client: ApiClient, mode: OutputMode) -> CliResult<()> {
-    match api_folders::create(&client, &args.name, args.team_id.as_deref()).await {
+    // Resolve --parent (UUID or name → folder id) before creating so the
+    // server gets a concrete UUID. Lookup is scope-aware: a team folder's
+    // parent must also be a team folder, so we pass --team-id through.
+    let parent_id: Option<String> = match &args.parent {
+        None => None,
+        Some(p) => {
+            let scope_hint: Option<&str> = if args.team_id.is_some() {
+                Some("team")
+            } else {
+                Some("personal")
+            };
+            match api_folders::resolve(&client, p, scope_hint, args.team_id.as_deref()).await {
+                Ok(f) => Some(f.id),
+                Err(e) => {
+                    emit_err(mode, &e);
+                    return Err(e);
+                }
+            }
+        }
+    };
+    match api_folders::create(
+        &client,
+        &args.name,
+        args.team_id.as_deref(),
+        parent_id.as_deref(),
+    )
+    .await
+    {
         Ok(f) => {
             // Stamp an empty entry into folders.json so the local index
             // reflects the cloud state without waiting for the next pull.
@@ -168,6 +224,82 @@ async fn list(args: ListArgs, client: ApiClient, mode: OutputMode) -> CliResult<
                             format!("{} skills", f.skill_count)
                         };
                         println!("  {:<28} {:<8} {}", f.name, f.scope, suffix);
+                    }
+                },
+            );
+            Ok(())
+        }
+        Err(e) => {
+            emit_err(mode, &e);
+            Err(e)
+        }
+    }
+}
+
+async fn reparent(args: ReparentArgs, client: ApiClient, mode: OutputMode) -> CliResult<()> {
+    // Validate that the caller asked for *something*: either a new
+    // parent, or --root to promote to top-level. The clap conflict
+    // guard handles the both-set case; we still need to catch the
+    // neither-set case.
+    if !args.root && args.new_parent.is_none() {
+        let err = CliError::User {
+            code: "REPARENT_NO_TARGET".into(),
+            message: "pass a new parent folder id/name, or --root to promote to the top level".into(),
+            hint: Some("knack folder reparent <id-or-name> <parent-id-or-name> | --root".into()),
+        };
+        emit_err(mode, &err);
+        return Err(err);
+    }
+
+    // Resolve the folder being moved.
+    let folder = match api_folders::resolve(
+        &client,
+        &args.id_or_name,
+        args.scope.as_deref(),
+        args.team_id.as_deref(),
+    )
+    .await
+    {
+        Ok(f) => f,
+        Err(e) => {
+            emit_err(mode, &e);
+            return Err(e);
+        }
+    };
+
+    // Resolve the target parent (when not --root). Use the moved
+    // folder's scope so we don't accidentally try to nest a personal
+    // folder under a team folder; the server would 422 but the local
+    // check gives a faster error.
+    let new_parent_id: Option<String> = if args.root {
+        None
+    } else {
+        let p = args.new_parent.as_ref().expect("guarded above");
+        let scope_hint = Some(folder.scope.as_str());
+        let team_hint = folder.owner_team_id.as_deref();
+        match api_folders::resolve(&client, p, scope_hint, team_hint).await {
+            Ok(parent) => Some(parent.id),
+            Err(e) => {
+                emit_err(mode, &e);
+                return Err(e);
+            }
+        }
+    };
+
+    match api_folders::reparent(&client, &folder.id, new_parent_id.as_deref()).await {
+        Ok(updated) => {
+            emit_ok(
+                mode,
+                json!({
+                    "id": updated.id,
+                    "name": updated.name,
+                    "parent_folder_id": updated.parent_folder_id,
+                }),
+                || {
+                    if let Some(p) = updated.parent_folder_id.as_deref() {
+                        println!("✓ moved {} under parent {}", updated.name, p);
+                    } else {
+                        println!("✓ promoted {} to root", updated.name);
                     }
                 },
             );
@@ -326,6 +458,7 @@ async fn mv(args: MvArgs, client: ApiClient, mode: OutputMode) -> CliResult<()> 
                 } else {
                     None
                 },
+                None, // root-level when auto-creating from `mv`
             )
             .await?
         }
