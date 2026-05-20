@@ -51,7 +51,7 @@ pub struct LoginArgs {
 
     /// Override the auto-generated PAT label. Defaults to
     /// `knack-cli@<hostname>`. Visible in
-    /// `getknack.ai/settings#cli-tokens`.
+    /// `getknack.ai/app/settings#cli-tokens`.
     #[arg(long)]
     pub label: Option<String>,
 
@@ -458,7 +458,7 @@ async fn status(client: ApiClient, mode: OutputMode) -> CliResult<()> {
                     let suffix = match source {
                         BearerSource::PatFile => {
                             ", token via ~/.knack/auth.json (manage at \
-                             getknack.ai/settings#cli-tokens)".to_string()
+                             getknack.ai/app/settings#cli-tokens)".to_string()
                         }
                         BearerSource::PatEnv => {
                             ", via KNACK_AUTH_TOKEN env (personal access token)".to_string()

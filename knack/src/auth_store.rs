@@ -79,7 +79,7 @@ pub struct StoredCredential {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub expires_at: Option<i64>,
 
-    /// User-assigned label for the PAT, shown in `getknack.ai/settings#cli-tokens`.
+    /// User-assigned label for the PAT, shown in `getknack.ai/app/settings#cli-tokens`.
     /// Defaults to `knack-cli@<hostname>` at mint time.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub label: Option<String>,
