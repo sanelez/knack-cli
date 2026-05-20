@@ -31,7 +31,24 @@ pub struct Skill {
     pub folder_id: Option<String>,
     #[serde(default)]
     pub folder_name: Option<String>,
+    /// Internal fork lineage. Set on rows created via
+    /// ``POST /skills/{id}/fork``. ``forked_from_skill_id`` is the raw
+    /// FK; ``forked_from`` carries a hydrated ``(id, slug,
+    /// author_username)`` triple populated by single-skill GETs and
+    /// the fork response (list endpoints leave it ``None`` to avoid an
+    /// N+1 JOIN).
+    #[serde(default)]
+    pub forked_from_skill_id: Option<String>,
+    #[serde(default)]
+    pub forked_from: Option<SkillForkedFrom>,
     pub created_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct SkillForkedFrom {
+    pub id: String,
+    pub slug: String,
+    pub author_username: Option<String>,
 }
 
 /// Response shape of `GET /skills/resolve?author=<u>&slug=<s>`.
@@ -233,6 +250,12 @@ impl MarketplaceDetail {
             // Public skills are never foldered (CHECK ``ck_skills_public_no_folder``).
             folder_id: None,
             folder_name: None,
+            // The marketplace detail view doesn't surface fork lineage
+            // (the public surface is for browsing originals, not seeing
+            // who forked from them). The workspace GET /skills/{id}
+            // populates these; here they stay None.
+            forked_from_skill_id: None,
+            forked_from: None,
             created_at: self.created_at,
         }
     }
