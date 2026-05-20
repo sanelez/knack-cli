@@ -251,16 +251,51 @@ impl TokenStore for FileStore {
 
 /// Resolve the default path for `auth.json`. Order:
 ///   1. `$KNACK_AUTH_FILE` (env override — tests + advanced users)
-///   2. `$HOME/.knack/auth.json` (or `%USERPROFILE%\.knack\auth.json`)
-///   3. `$XDG_CONFIG_HOME/knack/auth.json` (Linux last-resort)
+///   2. **Codex sandbox bridge**: if `$CODEX_HOME` is set and ends in
+///      `.codex`, derive the real user's HOME from its parent and use
+///      `<real_home>/.knack/auth.json`. This is the load-bearing case
+///      for Codex on Windows, where the sandbox runs as a separate
+///      Windows user (`CodexSandboxOffline`) and `%USERPROFILE%` inside
+///      the sandbox resolves to the wrong profile. Codex's ACL setup
+///      grants the sandbox user READ access to the real user's profile,
+///      and `$CODEX_HOME` is the breadcrumb that points at it.
+///   3. `$HOME/.knack/auth.json` (or `%USERPROFILE%\.knack\auth.json`)
+///   4. `$XDG_CONFIG_HOME/knack/auth.json` (Linux last-resort)
 pub fn auth_file_path() -> Option<PathBuf> {
     if let Ok(custom) = std::env::var("KNACK_AUTH_FILE") {
         return Some(PathBuf::from(custom));
+    }
+    if let Some(p) = codex_sandbox_real_home_auth_path() {
+        return Some(p);
     }
     if let Some(home) = dirs::home_dir() {
         return Some(home.join(".knack").join("auth.json"));
     }
     dirs::config_dir().map(|c| c.join("knack").join("auth.json"))
+}
+
+/// Derive the real user's auth.json path from `$CODEX_HOME` when it looks
+/// like Codex's default layout (`<real_home>/.codex`). Returns `None`
+/// when `CODEX_HOME` is unset, doesn't end in `.codex`, or has no
+/// resolvable parent.
+///
+/// Only kicks in when the Codex layout is recognizable — a customized
+/// `CODEX_HOME=D:\custom\codex` would have us writing to `D:\custom\
+/// .knack\auth.json`, which is probably NOT what the user wants. The
+/// `.codex` basename check keeps the heuristic conservative.
+fn codex_sandbox_real_home_auth_path() -> Option<PathBuf> {
+    let codex_home = std::env::var("CODEX_HOME").ok()?;
+    let codex_path = PathBuf::from(&codex_home);
+    if codex_path.file_name() != Some(std::ffi::OsStr::new(".codex")) {
+        return None;
+    }
+    let real_home = codex_path.parent()?;
+    // Bail if parent is empty (e.g. CODEX_HOME=".codex") — that's
+    // certainly not a HOME directory.
+    if real_home.as_os_str().is_empty() {
+        return None;
+    }
+    Some(real_home.join(".knack").join("auth.json"))
 }
 
 /// Write `body` to `path` with `0600` perms on Unix; default perms on
@@ -572,5 +607,80 @@ mod tests {
     fn stored_credential_is_pat_detection() {
         assert!(sample_pat().is_pat());
         assert!(!sample_legacy_jwt().is_pat());
+    }
+
+    /// Guard against shared `KNACK_AUTH_FILE` / `CODEX_HOME` env vars
+    /// leaking between tests in this module. Each codex-resolution test
+    /// sets `CODEX_HOME` then asserts; tearing down here keeps neighbors
+    /// (and the rest of the test suite) from observing the leftover.
+    fn clear_codex_env() {
+        unsafe {
+            std::env::remove_var("CODEX_HOME");
+            std::env::remove_var("KNACK_AUTH_FILE");
+        }
+    }
+
+    #[test]
+    fn auth_file_path_uses_codex_sandbox_fallback_when_codex_home_ends_in_dot_codex() {
+        clear_codex_env();
+        // Simulate Codex sandbox: CODEX_HOME points at the real user's
+        // .codex even though dirs::home_dir() inside the sandbox would
+        // be the sandbox user's profile. The CLI should derive the real
+        // HOME from CODEX_HOME's parent.
+        let real_home = if cfg!(windows) { r"C:\Users\Jordan" } else { "/home/jordan" };
+        let codex_home = if cfg!(windows) {
+            r"C:\Users\Jordan\.codex"
+        } else {
+            "/home/jordan/.codex"
+        };
+        unsafe {
+            std::env::set_var("CODEX_HOME", codex_home);
+        }
+        let resolved = auth_file_path().expect("path resolves");
+        let expected = PathBuf::from(real_home).join(".knack").join("auth.json");
+        assert_eq!(resolved, expected);
+        clear_codex_env();
+    }
+
+    #[test]
+    fn auth_file_path_ignores_codex_home_with_nonstandard_basename() {
+        clear_codex_env();
+        // Custom CODEX_HOME that doesn't end in `.codex` — could be a
+        // user-customized layout. We should NOT assume `parent()` is a
+        // HOME directory in that case; fall through to dirs::home_dir().
+        let custom = if cfg!(windows) { r"D:\custom\codexstuff" } else { "/srv/codexstuff" };
+        unsafe {
+            std::env::set_var("CODEX_HOME", custom);
+        }
+        let resolved = auth_file_path().expect("path resolves");
+        // The resolved path should NOT live under D:\custom or /srv —
+        // it should be dirs::home_dir()-based.
+        assert!(
+            !resolved.starts_with(PathBuf::from(custom).parent().unwrap()),
+            "expected dirs::home_dir fallback, got {resolved:?}"
+        );
+        clear_codex_env();
+    }
+
+    #[test]
+    fn auth_file_path_env_override_beats_codex_fallback() {
+        clear_codex_env();
+        // Explicit KNACK_AUTH_FILE wins over both the Codex fallback
+        // and the dirs::home_dir() default — used by tests and by
+        // power users who want to keep the auth file in a non-default
+        // location.
+        let custom_path = "/tmp/custom/auth.json";
+        let codex_home = if cfg!(windows) {
+            r"C:\Users\Jordan\.codex"
+        } else {
+            "/home/jordan/.codex"
+        };
+        unsafe {
+            std::env::set_var("KNACK_AUTH_FILE", custom_path);
+            std::env::set_var("CODEX_HOME", codex_home);
+        }
+        let resolved = auth_file_path().expect("path resolves");
+        assert_eq!(resolved, PathBuf::from(custom_path));
+        clear_codex_env();
     }
 }
