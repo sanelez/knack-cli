@@ -8,7 +8,7 @@ use tokio::time::sleep;
 
 use crate::api::auth as api_auth;
 use crate::api::ApiClient;
-use crate::auth_store::StoredTokens;
+use crate::auth_store::StoredCredential;
 use crate::errors::{CliError, CliResult};
 use crate::output::{chatter, emit_err, emit_ok, OutputMode};
 
@@ -41,12 +41,25 @@ pub struct LoginArgs {
     #[arg(long, conflicts_with = "poll")]
     pub start: bool,
 
-    /// Stateless mode: run a single poll against the device flow. Saves
-    /// tokens to the keyring on `approved` and exits. Re-run the same
-    /// command repeatedly (e.g. between agent turns) until the response
-    /// reports `approved` or `expired`.
+    /// Stateless mode: run a single poll against the device flow. On
+    /// `approved`, mints a Personal Access Token and saves it to
+    /// `~/.knack/auth.json`. Re-run the same command repeatedly (e.g.
+    /// between agent turns) until the response reports `approved` or
+    /// `expired`.
     #[arg(long, value_name = "DEVICE_CODE")]
     pub poll: Option<String>,
+
+    /// Override the auto-generated PAT label. Defaults to
+    /// `knack-cli@<hostname>`. Visible in
+    /// `getknack.ai/settings#cli-tokens`.
+    #[arg(long)]
+    pub label: Option<String>,
+
+    /// Expire the PAT after N days. Default: never expires. Pass a
+    /// positive integer to opt into rotation; the CLI will surface an
+    /// AuthRequired one day before expiry.
+    #[arg(long, value_name = "DAYS")]
+    pub expires_in_days: Option<i64>,
 }
 
 pub async fn run(cmd: AuthCmd, client: ApiClient, mode: OutputMode) -> CliResult<()> {
@@ -55,7 +68,7 @@ pub async fn run(cmd: AuthCmd, client: ApiClient, mode: OutputMode) -> CliResult
             if a.start {
                 login_start(client, mode).await
             } else if let Some(code) = a.poll.clone() {
-                login_poll(client, mode, &code).await
+                login_poll(a, client, mode, &code).await
             } else {
                 login(a, client, mode).await
             }
@@ -105,15 +118,94 @@ async fn login_start(client: ApiClient, mode: OutputMode) -> CliResult<()> {
     Ok(())
 }
 
+/// Hostname for the default PAT label (`knack-cli@<hostname>`). Falls
+/// back through Windows `COMPUTERNAME`, Unix `HOSTNAME`/`HOST` env, then
+/// "unknown" — no new dep, no fallible system call.
+fn host_label() -> String {
+    std::env::var("COMPUTERNAME")
+        .or_else(|_| std::env::var("HOSTNAME"))
+        .or_else(|_| std::env::var("HOST"))
+        .unwrap_or_else(|_| "unknown".into())
+}
+
+/// Convert a freshly-received device-flow JWT into a long-lived PAT and
+/// persist it to the primary credential store. Shared by both the
+/// blocking `login()` and stateless `login_poll()` flows so the
+/// persistence semantics never diverge.
+///
+/// Safety net: if `POST /me/cli-tokens` returns a token but the local
+/// file write fails, best-effort revoke the orphan server-side so the
+/// user doesn't end up with an inaccessible row in their token list.
+async fn finalize_login_to_pat(
+    client: &ApiClient,
+    access_jwt: &str,
+    label: Option<&str>,
+    expires_in_days: Option<i64>,
+) -> Result<(api_auth::CreateCliTokenResponse, api_auth::Me), CliError> {
+    // Use the JWT as a one-shot bearer to mint the PAT. The JWT itself
+    // is never persisted; we discard it as soon as the PAT lands.
+    let jwt_client = client.clone().with_bearer_override(Some(access_jwt.into()));
+
+    let owned_label = label.map(str::to_owned).unwrap_or_else(|| format!("knack-cli@{}", host_label()));
+    let pat = api_auth::create_cli_token(&jwt_client, &owned_label, expires_in_days).await?;
+
+    // Identify the user via /auth/me with the same JWT so we can cache
+    // user_id + email alongside the PAT. Best-effort — if /me fails the
+    // PAT still works, we just don't have offline identity for `status`.
+    let me = api_auth::me(&jwt_client).await.map_err(|e| {
+        // /me failure is rare and probably indicates a bigger problem;
+        // surface it but only after we've revoked the orphan PAT.
+        let pat_id = pat.id.clone();
+        let revoke_client = jwt_client.clone();
+        tokio::spawn(async move {
+            let _ = api_auth::revoke_cli_token(&revoke_client, &pat_id).await;
+        });
+        e
+    })?;
+
+    let cred = StoredCredential {
+        token: pat.plaintext.clone(),
+        token_id: Some(pat.id.clone()),
+        prefix: Some(pat.prefix.clone()),
+        refresh_token: None,
+        expires_at: pat.expires_at.map(|dt| dt.timestamp()),
+        label: Some(pat.name.clone()),
+        user_id: Some(me.id.clone()),
+        email: Some(me.email.clone()),
+    };
+
+    if let Err(e) = client.store.save(&client.account, &cred) {
+        // Local persist failed — revoke the server-side row so the user
+        // doesn't have a ghost token they can't see.
+        let _ = api_auth::revoke_cli_token(&jwt_client, &pat.id).await;
+        return Err(e);
+    }
+
+    // Best-effort: clear the legacy keyring entry now that the file
+    // store has the canonical credential. Means the legacy fallback
+    // path stops firing for this account.
+    if let Some(legacy) = &client.legacy_store {
+        let _ = legacy.clear(&client.account);
+    }
+
+    Ok((pat, me))
+}
+
 /// Stateless step 2: ask the server once whether the device flow has been
-/// approved. If yes, persist the new tokens to the keyring. Either way,
-/// emit a JSON envelope the caller can branch on (`status` field).
+/// approved. If yes, mint a PAT and persist it to `~/.knack/auth.json`.
+/// Either way, emit a JSON envelope the caller can branch on
+/// (`status` field).
 ///
 /// Exits 0 in all non-network cases — including `authorization_pending`,
 /// `slow_down`, `denied`, and `expired` — so the caller doesn't have to
 /// distinguish "the CLI broke" from "the user hasn't clicked yet". Bad
 /// network or 5xx still propagates as a normal error.
-async fn login_poll(client: ApiClient, mode: OutputMode, device_code: &str) -> CliResult<()> {
+async fn login_poll(
+    args: LoginArgs,
+    client: ApiClient,
+    mode: OutputMode,
+    device_code: &str,
+) -> CliResult<()> {
     let resp = match api_auth::device_poll(&client, device_code).await {
         Ok(r) => r,
         Err(e) => {
@@ -130,23 +222,33 @@ async fn login_poll(client: ApiClient, mode: OutputMode, device_code: &str) -> C
         PollStatus::Approved => "approved",
     };
 
-    // Approved: save the tokens before reporting success, so the caller
-    // doesn't try to use the bearer before the keyring has been updated.
+    let mut approved_email: Option<String> = None;
+    let mut approved_prefix: Option<String> = None;
+
     if matches!(resp.status, PollStatus::Approved) {
         let access = resp.access_token.clone().unwrap_or_default();
-        let refresh = resp.refresh_token.clone().unwrap_or_default();
-        let expires = resp.expires_in.unwrap_or(0);
-        if access.is_empty() || refresh.is_empty() {
-            let err = CliError::AuthFailed("server omitted token pair".into());
+        if access.is_empty() {
+            let err = CliError::AuthFailed("server omitted access token".into());
             emit_err(mode, &err);
             return Err(err);
         }
-        let tokens = StoredTokens {
-            access_token: access,
-            refresh_token: refresh,
-            expires_at: chrono::Utc::now().timestamp() + expires,
-        };
-        client.store.save(&client.account, &tokens)?;
+        match finalize_login_to_pat(
+            &client,
+            &access,
+            args.label.as_deref(),
+            args.expires_in_days,
+        )
+        .await
+        {
+            Ok((pat, me)) => {
+                approved_email = Some(me.email);
+                approved_prefix = Some(pat.prefix);
+            }
+            Err(e) => {
+                emit_err(mode, &e);
+                return Err(e);
+            }
+        }
     }
 
     emit_ok(
@@ -154,10 +256,13 @@ async fn login_poll(client: ApiClient, mode: OutputMode, device_code: &str) -> C
         json!({
             "status": status_str,
             "approved": matches!(resp.status, PollStatus::Approved),
-            "expires_in": resp.expires_in,
+            "email": approved_email,
+            "token_prefix": approved_prefix,
         }),
         || match resp.status {
-            PollStatus::Approved => println!("✓ approved, tokens saved"),
+            PollStatus::Approved => println!(
+                "✓ approved — PAT saved to ~/.knack/auth.json. Persists across all future shells."
+            ),
             PollStatus::AuthorizationPending => {
                 println!("waiting for approval — re-run --poll in a few seconds")
             }
@@ -239,47 +344,47 @@ async fn login(args: LoginArgs, client: ApiClient, mode: OutputMode) -> CliResul
             }
             PollStatus::Approved => {
                 let access = resp.access_token.unwrap_or_default();
-                let refresh = resp.refresh_token.unwrap_or_default();
-                let expires = resp.expires_in.unwrap_or(0);
-                if access.is_empty() || refresh.is_empty() {
-                    let err = CliError::AuthFailed("server omitted token pair".into());
+                if access.is_empty() {
+                    let err = CliError::AuthFailed("server omitted access token".into());
                     emit_err(mode, &err);
                     return Err(err);
                 }
-                let tokens = StoredTokens {
-                    access_token: access,
-                    refresh_token: refresh,
-                    expires_at: chrono::Utc::now().timestamp() + expires,
+                let (pat, me) = match finalize_login_to_pat(
+                    &client,
+                    &access,
+                    args.label.as_deref(),
+                    args.expires_in_days,
+                )
+                .await
+                {
+                    Ok(v) => v,
+                    Err(e) => {
+                        emit_err(mode, &e);
+                        return Err(e);
+                    }
                 };
-                client.store.save(&client.account, &tokens)?;
-
-                // Confirm with /auth/me so we can show the user who they are.
-                match api_auth::me(&client).await {
-                    Ok(me) => {
-                        emit_ok(
-                            mode,
-                            json!({
-                                "user_id": me.id,
-                                "email": me.email,
-                                "name": me.name,
-                                "plan": me.plan,
-                                "account": client.account,
-                            }),
-                            || {
-                                println!("✓ logged in as {}", me.email);
-                            },
+                emit_ok(
+                    mode,
+                    json!({
+                        "user_id": me.id,
+                        "email": me.email,
+                        "name": me.name,
+                        "plan": me.plan,
+                        "account": client.account,
+                        "token_id": pat.id,
+                        "token_prefix": pat.prefix,
+                        "expires_at": pat.expires_at,
+                    }),
+                    || {
+                        println!(
+                            "✓ logged in as {} ({}). Token saved to ~/.knack/auth.json.",
+                            me.email, me.plan
                         );
-                    }
-                    Err(_) => {
-                        emit_ok(
-                            mode,
-                            json!({ "account": client.account, "ok": true }),
-                            || {
-                                println!("✓ logged in");
-                            },
+                        println!(
+                            "  Persists across all shells and sandboxed agents on this machine."
                         );
-                    }
-                }
+                    },
+                );
                 return Ok(());
             }
         }
@@ -287,11 +392,27 @@ async fn login(args: LoginArgs, client: ApiClient, mode: OutputMode) -> CliResul
 }
 
 async fn logout(client: ApiClient, mode: OutputMode) -> CliResult<()> {
-    // Best-effort: revoke server-side first, then wipe locally regardless.
+    // Best-effort server-side revoke, then wipe both stores locally
+    // regardless of network outcome. Order matters: try the revoke
+    // before clearing the local credential so the bearer we send is
+    // the one we're about to invalidate (cheap correctness — server
+    // doesn't actually need it, but `_from_pat` looks neat in logs).
     let stored = client.store.load(&client.account)?;
-    let refresh = stored.as_ref().map(|t| t.refresh_token.as_str());
-    let _ = api_auth::logout(&client, refresh).await;
+    if let Some(cred) = &stored {
+        if let Some(token_id) = &cred.token_id {
+            // PAT path: hit DELETE /me/cli-tokens/{id}.
+            let _ = api_auth::revoke_cli_token(&client, token_id).await;
+        } else if let Some(refresh) = cred.refresh_token.as_deref() {
+            // Legacy JWT path: hit POST /auth/logout with the refresh.
+            let _ = api_auth::logout(&client, Some(refresh)).await;
+        }
+    }
     client.store.clear(&client.account)?;
+    // Clear the legacy keyring too — covers users who started on
+    // pre-0.5 and have a stale entry sitting there.
+    if let Some(legacy) = &client.legacy_store {
+        let _ = legacy.clear(&client.account);
+    }
 
     emit_ok(
         mode,
@@ -304,37 +425,19 @@ async fn logout(client: ApiClient, mode: OutputMode) -> CliResult<()> {
 }
 
 async fn status(client: ApiClient, mode: OutputMode) -> CliResult<()> {
-    let stored = client.store.load(&client.account)?;
-    if stored.is_none() && client.bearer_override.is_none() {
-        let err = CliError::AuthRequired;
-        emit_err(mode, &err);
-        return Err(err);
-    }
-
-    // Bearer-override (KNACK_AUTH_TOKEN / --auth-token) bypasses the keyring
-    // entirely, so any expiry we'd compute from `stored` doesn't describe
-    // the credential actually authenticating the request. Surface that
-    // explicitly instead of showing a misleading "valid for Xd" from a
-    // stale JWT we happen to have in the keyring.
-    let bearer_source = if let Some(t) = &client.bearer_override {
-        Some(if t.starts_with("knack_pat_") {
-            BearerSource::Pat
-        } else {
-            BearerSource::EnvJwt
-        })
-    } else {
-        None
-    };
-
-    // Only decode the keyring JWT when it's actually the credential in
-    // play (no override active). Trust our own store — no signature check.
-    let expires_in_secs = if bearer_source.is_none() {
-        stored
-            .as_ref()
-            .and_then(|t| jwt_exp_seconds_from_now(&t.access_token))
-    } else {
-        None
-    };
+    // Five possible bearer sources, resolved in the same order
+    // ApiClient::current_access_token uses. We only surface info that's
+    // relevant to whichever wins; the others are hidden so the output
+    // doesn't lie about what's authenticating the request.
+    let (source, prefix, expires_in_secs, token_id) =
+        match resolve_status_source(&client)? {
+            Some(info) => info,
+            None => {
+                let err = CliError::AuthRequired;
+                emit_err(mode, &err);
+                return Err(err);
+            }
+        };
 
     match api_auth::me(&client).await {
         Ok(me) => {
@@ -346,36 +449,44 @@ async fn status(client: ApiClient, mode: OutputMode) -> CliResult<()> {
                     "plan": me.plan,
                     "account": client.account,
                     "auth_method": me.auth_method,
+                    "bearer_source": source.as_str(),
+                    "token_prefix": prefix,
+                    "token_id": token_id,
                     "token_expires_in_seconds": expires_in_secs,
-                    "bearer_source": match bearer_source {
-                        Some(BearerSource::Pat) => "pat_env",
-                        Some(BearerSource::EnvJwt) => "jwt_env",
-                        None => "keyring",
-                    },
                 }),
                 || {
-                    let suffix = match bearer_source {
-                        Some(BearerSource::Pat) => {
-                            ", via personal access token (manage at \
+                    let suffix = match source {
+                        BearerSource::PatFile => {
+                            ", token via ~/.knack/auth.json (manage at \
                              getknack.ai/settings#cli-tokens)".to_string()
                         }
-                        Some(BearerSource::EnvJwt) => {
-                            ", via KNACK_AUTH_TOKEN env override".to_string()
+                        BearerSource::PatEnv => {
+                            ", via KNACK_AUTH_TOKEN env (personal access token)".to_string()
                         }
-                        None => match expires_in_secs {
+                        BearerSource::JwtEnv => {
+                            ", via KNACK_AUTH_TOKEN env (JWT)".to_string()
+                        }
+                        BearerSource::JwtFile => match expires_in_secs {
                             Some(s) if s > 0 => {
-                                format!(", token valid for {}", human_duration(s))
+                                format!(", JWT valid for {}", human_duration(s))
                             }
-                            Some(_) => ", token expired (refresh on next call)".into(),
-                            None => "".into(),
+                            Some(_) => ", JWT expired (refresh on next call)".into(),
+                            None => ", JWT (no expiry recorded)".into(),
+                        },
+                        BearerSource::KeyringJwt => match expires_in_secs {
+                            Some(s) if s > 0 => format!(
+                                ", legacy keyring JWT valid for {} (re-run \
+                                 `knack auth login` to upgrade)",
+                                human_duration(s)
+                            ),
+                            _ => ", legacy keyring JWT (re-run `knack auth login` to upgrade)"
+                                .into(),
                         },
                     };
                     println!("{} ({}){}", me.email, me.plan, suffix);
-                    // Only nudge for `knack auth refresh` when the keyring
-                    // is the credential. With an override there's nothing
-                    // to refresh on this side; the user manages the token
-                    // externally.
-                    if bearer_source.is_none() {
+                    // Refresh nudge only meaningful for refreshable
+                    // credentials nearing expiry.
+                    if matches!(source, BearerSource::JwtFile | BearerSource::KeyringJwt) {
                         if let Some(s) = expires_in_secs {
                             if s > 0 && s < 86_400 {
                                 println!("    proactively refresh with `knack auth refresh`");
@@ -395,15 +506,112 @@ async fn status(client: ApiClient, mode: OutputMode) -> CliResult<()> {
 
 #[derive(Debug, Clone, Copy)]
 enum BearerSource {
-    /// Token came from `KNACK_AUTH_TOKEN` / `--auth-token` and looks like
-    /// a Personal Access Token.
-    Pat,
-    /// Same source, but doesn't match the PAT prefix — assumed to be a
-    /// JWT pasted in for CI / testing.
-    EnvJwt,
+    /// Primary credential at `~/.knack/auth.json`, PAT-shaped.
+    PatFile,
+    /// Primary credential at `~/.knack/auth.json`, JWT-shaped. Only
+    /// happens if a user hand-edited the file. Surfaced for completeness.
+    JwtFile,
+    /// Env override (`KNACK_AUTH_TOKEN` / `--auth-token`), PAT-shaped.
+    PatEnv,
+    /// Env override, JWT-shaped (pasted into CI by hand).
+    JwtEnv,
+    /// Legacy keyring read. Fires the deprecation nudge on the way in.
+    KeyringJwt,
+}
+
+impl BearerSource {
+    fn as_str(self) -> &'static str {
+        match self {
+            BearerSource::PatFile => "pat_file",
+            BearerSource::JwtFile => "jwt_file",
+            BearerSource::PatEnv => "pat_env",
+            BearerSource::JwtEnv => "jwt_env",
+            BearerSource::KeyringJwt => "keyring_jwt",
+        }
+    }
+}
+
+/// Walk the same resolution order as `ApiClient::current_access_token`
+/// and pull out display metadata for `status` to surface. Returns
+/// `None` only when no credential exists anywhere.
+fn resolve_status_source(
+    client: &ApiClient,
+) -> Result<Option<(BearerSource, Option<String>, Option<i64>, Option<String>)>, CliError> {
+    if let Some(t) = &client.bearer_override {
+        let source = if t.starts_with("knack_pat_") {
+            BearerSource::PatEnv
+        } else {
+            BearerSource::JwtEnv
+        };
+        let prefix = pat_display_prefix(t);
+        let expires = if matches!(source, BearerSource::JwtEnv) {
+            jwt_exp_seconds_from_now(t)
+        } else {
+            None
+        };
+        return Ok(Some((source, prefix, expires, None)));
+    }
+    if let Some(cred) = client.store.load(&client.account)? {
+        if cred.is_pat() {
+            return Ok(Some((
+                BearerSource::PatFile,
+                cred.prefix.or_else(|| pat_display_prefix(&cred.token)),
+                cred.expires_at.map(|t| t - chrono::Utc::now().timestamp()),
+                cred.token_id,
+            )));
+        } else {
+            return Ok(Some((
+                BearerSource::JwtFile,
+                None,
+                jwt_exp_seconds_from_now(&cred.token),
+                None,
+            )));
+        }
+    }
+    if let Some(legacy) = &client.legacy_store {
+        if let Some(cred) = legacy.load(&client.account).ok().flatten() {
+            return Ok(Some((
+                BearerSource::KeyringJwt,
+                None,
+                jwt_exp_seconds_from_now(&cred.token),
+                None,
+            )));
+        }
+    }
+    Ok(None)
+}
+
+fn pat_display_prefix(token: &str) -> Option<String> {
+    if !token.starts_with("knack_pat_") {
+        return None;
+    }
+    let cut = token.char_indices().nth(16).map(|(i, _)| i).unwrap_or(token.len());
+    Some(token[..cut].to_string())
 }
 
 async fn refresh(client: ApiClient, mode: OutputMode) -> CliResult<()> {
+    // PATs don't have a refresh dance — they live until revoked or
+    // expired. Surface that clearly so scripted callers don't break,
+    // and so humans don't wait for a server roundtrip that does nothing.
+    if let Some(cred) = client.store.load(&client.account)? {
+        if cred.is_pat() {
+            emit_ok(
+                mode,
+                json!({
+                    "refreshed": false,
+                    "reason": "pat_no_refresh_needed",
+                    "token_prefix": cred.prefix,
+                }),
+                || {
+                    println!(
+                        "✓ using a personal access token; no refresh needed (token persists until revoked)."
+                    )
+                },
+            );
+            return Ok(());
+        }
+    }
+
     match client.refresh_tokens().await {
         Ok(secs) => {
             emit_ok(

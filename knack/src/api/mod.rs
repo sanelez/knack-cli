@@ -23,7 +23,7 @@ use reqwest::{Client, Method, RequestBuilder, StatusCode};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::auth_store::{StoredTokens, TokenStore};
+use crate::auth_store::{StoredCredential, TokenStore};
 use crate::config::Config;
 use crate::errors::CliError;
 
@@ -31,6 +31,21 @@ use crate::errors::CliError;
 /// process invocation, no matter how many API calls a single command
 /// fires. Re-running the binary clears it naturally.
 static NOTICES_BANNER_PRINTED: OnceLock<()> = OnceLock::new();
+
+/// One-time per-process stderr nudge fired when [`ApiClient`] reads a
+/// credential from the legacy keyring fallback instead of the new file
+/// store. Tells the user to re-run `knack auth login` to migrate.
+/// Stderr (so `--json` stdout stays clean), no formatting deps, no-op
+/// after the first call.
+fn nudge_keyring_fallback_once() {
+    if LEGACY_NUDGE.set(()).is_ok() {
+        eprintln!(
+            "knack: using legacy keyring credential. Run `knack auth login` to upgrade to \
+             a portable file-backed token that works across all your shells (including \
+             sandboxed agents)."
+        );
+    }
+}
 
 /// Inspect a response for `X-Knack-Notices` and print a one-line stderr
 /// banner if the server flagged "feedback". The banner is intentionally
@@ -274,11 +289,23 @@ fn map_api_error(status: StatusCode, body: Option<ApiErrorBody>) -> CliError {
 pub struct ApiClient {
     pub config: Config,
     pub http: Client,
+    /// Primary credential store. 0.5+: file-backed (`FileStore`). Pre-0.5:
+    /// keyring. Wired by `build_client` in `commands/mod.rs`.
     pub store: Arc<dyn TokenStore + Send + Sync>,
+    /// Optional legacy store consulted only when [`store`] returns `None`.
+    /// In production this is a `KeyringStore` so users upgrading from
+    /// pre-0.5 don't lose their auth — their next `knack auth login`
+    /// migrates them to the file store. Set to `None` in tests that
+    /// don't want a real keyring touched.
+    pub legacy_store: Option<Arc<dyn TokenStore + Send + Sync>>,
     pub account: String,
     /// Optional override that bypasses the token store entirely (--auth-token).
     pub bearer_override: Option<String>,
 }
+
+/// One-process guard so the legacy-keyring deprecation nudge fires at
+/// most once per `knack` invocation, no matter how many requests run.
+static LEGACY_NUDGE: std::sync::OnceLock<()> = std::sync::OnceLock::new();
 
 impl ApiClient {
     pub fn new(
@@ -293,6 +320,7 @@ impl ApiClient {
                 .build()
                 .expect("reqwest client should build"),
             store,
+            legacy_store: None,
             account: account.into(),
             bearer_override: None,
         }
@@ -303,15 +331,64 @@ impl ApiClient {
         self
     }
 
+    /// Wire a legacy `TokenStore` (typically `KeyringStore`) as a read-only
+    /// fallback consulted when the primary store has nothing.
+    pub fn with_legacy_store(
+        mut self,
+        legacy: Option<Arc<dyn TokenStore + Send + Sync>>,
+    ) -> Self {
+        self.legacy_store = legacy;
+        self
+    }
+
     fn url(&self, path: &str) -> String {
         format!("{}{}", self.config.api_base, path)
     }
 
+    /// Resolve the bearer for an outgoing request. Order:
+    ///
+    ///   1. `bearer_override` — explicit `--auth-token` / `KNACK_AUTH_TOKEN`.
+    ///   2. Primary `store` (file in production) — the post-0.5 default.
+    ///   3. Legacy `legacy_store` (keyring in production) — kept readable so
+    ///      pre-0.5 users keep working until they re-run `knack auth login`.
+    ///      Prints a one-time stderr nudge when it actually fires.
     fn current_access_token(&self) -> Result<Option<String>, CliError> {
         if let Some(t) = &self.bearer_override {
             return Ok(Some(t.clone()));
         }
-        Ok(self.store.load(&self.account)?.map(|t| t.access_token))
+        if let Some(cred) = self.store.load(&self.account)? {
+            return Ok(Some(cred.token));
+        }
+        if let Some(legacy) = &self.legacy_store {
+            // Discard keyring read errors silently: missing libsecret /
+            // missing dbus on a sandbox is normal and shouldn't break the
+            // file-backed happy path. Same for "no entry" → just None.
+            if let Some(cred) = legacy.load(&self.account).ok().flatten() {
+                nudge_keyring_fallback_once();
+                return Ok(Some(cred.token));
+            }
+        }
+        Ok(None)
+    }
+
+    /// Look at whatever credential is currently in play and return whether
+    /// it's a legacy JWT (needs refresh on 401) or a PAT (401 is terminal).
+    /// `bearer_override` is treated as PAT-shaped iff it starts with the
+    /// PAT prefix; otherwise as JWT for backwards compat with people who
+    /// pipe a raw JWT into `KNACK_AUTH_TOKEN`.
+    fn current_is_jwt(&self) -> Result<bool, CliError> {
+        if let Some(t) = &self.bearer_override {
+            return Ok(!t.starts_with("knack_pat_"));
+        }
+        if let Some(cred) = self.store.load(&self.account)? {
+            return Ok(!cred.is_pat());
+        }
+        if let Some(legacy) = &self.legacy_store {
+            if let Some(cred) = legacy.load(&self.account).ok().flatten() {
+                return Ok(!cred.is_pat());
+            }
+        }
+        Ok(false)
     }
 
     /// Build an authenticated request. Returns the builder so callers can add
@@ -341,9 +418,12 @@ impl ApiClient {
             maybe_print_notices_banner(resp.headers());
             return decode_body(resp).await;
         }
-        // Refresh once, retry once.
+        // Refresh once, retry once — only for legacy JWT credentials.
+        // PAT 401 means the token was revoked or expired; refresh doesn't
+        // help, surface the AUTH_FAILED so the user re-runs `knack auth login`.
         if status == StatusCode::UNAUTHORIZED
             && self.bearer_override.is_none()
+            && self.current_is_jwt().unwrap_or(false)
             && self.try_refresh().await.is_ok()
         {
             let resp2 = build(self)?.send().await?;
@@ -370,8 +450,10 @@ impl ApiClient {
             maybe_print_notices_banner(resp.headers());
             return Ok(());
         }
+        // Refresh-retry path is JWT-only; see send_json for rationale.
         if status == StatusCode::UNAUTHORIZED
             && self.bearer_override.is_none()
+            && self.current_is_jwt().unwrap_or(false)
             && self.try_refresh().await.is_ok()
         {
             let resp2 = build(self)?.send().await?;
@@ -388,22 +470,34 @@ impl ApiClient {
     }
 
     /// Force a refresh, persist the new pair, and return the seconds until
-    /// the new access token expires. Used by `knack auth refresh` so
-    /// long-running agents can proactively roll the token before it expires.
+    /// the new access token expires. Only meaningful for legacy JWT
+    /// credentials; PATs don't refresh — they live until revoked.
     pub async fn refresh_tokens(&self) -> Result<i64, CliError> {
         self.try_refresh().await?;
         let stored = self
             .store
             .load(&self.account)?
             .ok_or(CliError::AuthRequired)?;
-        Ok(stored.expires_at - chrono::Utc::now().timestamp())
+        let expires_at = stored.expires_at.ok_or_else(|| {
+            CliError::AuthFailed("refreshed credential has no expiry".into())
+        })?;
+        Ok(expires_at - chrono::Utc::now().timestamp())
     }
 
     async fn try_refresh(&self) -> Result<(), CliError> {
         let Some(stored) = self.store.load(&self.account)? else {
             return Err(CliError::AuthRequired);
         };
-        let body = serde_json::json!({ "refresh_token": stored.refresh_token });
+        // PATs don't refresh — a 401 means revoked or expired, which is
+        // terminal. Caller should surface AUTH_FAILED with a hint to
+        // re-run `knack auth login`.
+        if stored.is_pat() {
+            return Err(CliError::AuthRequired);
+        }
+        let Some(refresh) = stored.refresh_token.as_deref() else {
+            return Err(CliError::AuthRequired);
+        };
+        let body = serde_json::json!({ "refresh_token": refresh });
         let resp = self
             .http
             .post(self.url("/auth/refresh"))
@@ -423,10 +517,15 @@ impl ApiClient {
             expires_in: i64,
         }
         let r: RefreshResp = resp.json().await?;
-        let new = StoredTokens {
-            access_token: r.access_token,
-            refresh_token: r.refresh_token,
-            expires_at: chrono::Utc::now().timestamp() + r.expires_in,
+        let new = StoredCredential {
+            token: r.access_token,
+            token_id: None,
+            prefix: None,
+            refresh_token: Some(r.refresh_token),
+            expires_at: Some(chrono::Utc::now().timestamp() + r.expires_in),
+            label: None,
+            user_id: stored.user_id.clone(),
+            email: stored.email.clone(),
         };
         self.store.save(&self.account, &new)?;
         Ok(())

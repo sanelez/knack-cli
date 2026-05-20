@@ -119,8 +119,75 @@ async fn refresh_on_401_retries_and_persists_new_tokens() {
 
     // The retry path should have written the new tokens to the store.
     let stored = store.load("default").unwrap().expect("tokens persisted");
-    assert_eq!(stored.access_token, "rotated-access");
-    assert_eq!(stored.refresh_token, "rotated-refresh");
+    assert_eq!(stored.token, "rotated-access");
+    assert_eq!(stored.refresh_token.as_deref(), Some("rotated-refresh"));
+}
+
+#[tokio::test]
+async fn pat_401_does_not_attempt_refresh() {
+    use knack_cli::errors::CliError;
+
+    let (server, client, _store) = common::fixture_pat().await;
+
+    // /skills returns 401 — with a PAT credential, the CLI should
+    // surface the error immediately rather than trying /auth/refresh
+    // (which makes no sense for PATs and would just produce noise).
+    Mock::given(method("GET"))
+        .and(path("/skills"))
+        .respond_with(ResponseTemplate::new(401).set_body_json(json!({
+            "ok": false,
+            "error": { "code": "AUTH_REQUIRED", "message": "revoked" }
+        })))
+        .mount(&server)
+        .await;
+
+    // No /auth/refresh mock — if the CLI tries it, we'll see a wiremock
+    // "no matching mock" error in the failure mode rather than the
+    // AuthFailed we want.
+    let err = api_skills::list(&client, None, None, 50).await.unwrap_err();
+    assert!(
+        matches!(err, CliError::AuthFailed(_)),
+        "expected AuthFailed (no refresh attempted), got {err:?}"
+    );
+}
+
+#[tokio::test]
+async fn create_cli_token_returns_plaintext() {
+    let (server, client, _store) = common::fixture().await;
+
+    Mock::given(method("POST"))
+        .and(path("/me/cli-tokens"))
+        .respond_with(ResponseTemplate::new(201).set_body_json(json!({
+            "id": "tok_abc",
+            "name": "knack-cli@hostname",
+            "plaintext": "knack_pat_aBcDeF1234567890ghijklmnopqrstuvwxyz_abc",
+            "prefix": "knack_pat_aBcDeF",
+            "created_at": "2026-05-20T12:00:00Z",
+            "expires_at": null,
+        })))
+        .mount(&server)
+        .await;
+
+    let resp = api_auth::create_cli_token(&client, "knack-cli@hostname", None)
+        .await
+        .unwrap();
+    assert_eq!(resp.id, "tok_abc");
+    assert!(resp.plaintext.starts_with("knack_pat_"));
+    assert_eq!(resp.prefix, "knack_pat_aBcDeF");
+    assert!(resp.expires_at.is_none());
+}
+
+#[tokio::test]
+async fn revoke_cli_token_calls_delete() {
+    let (server, client, _store) = common::fixture().await;
+
+    Mock::given(method("DELETE"))
+        .and(path("/me/cli-tokens/tok_abc"))
+        .respond_with(ResponseTemplate::new(204))
+        .mount(&server)
+        .await;
+
+    api_auth::revoke_cli_token(&client, "tok_abc").await.unwrap();
 }
 
 #[tokio::test]

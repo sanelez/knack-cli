@@ -31,7 +31,7 @@ use std::sync::Arc;
 use clap::{Args, Subcommand};
 
 use crate::api::ApiClient;
-use crate::auth_store::{KeyringStore, TokenStore};
+use crate::auth_store::{FileStore, KeyringStore, TokenStore};
 use crate::config::Config;
 use crate::errors::CliResult;
 use crate::output::OutputMode;
@@ -162,12 +162,23 @@ impl GlobalArgs {
     }
 }
 
-/// Build the API client from CLI flags and config. Tests can construct one
-/// directly with a `MemoryStore`; this is the production path.
+/// Build the API client from CLI flags and config. Tests can construct
+/// one directly with a `MemoryStore`; this is the production path.
+///
+/// Primary store: file at `~/.knack/auth.json` (post-0.5 default).
+/// Legacy fallback: OS keyring, consulted only when the file is empty so
+/// pre-0.5 users keep working until they re-run `knack auth login`.
 pub fn build_client(config: Config, args: &GlobalArgs) -> ApiClient {
-    let store: Arc<dyn TokenStore + Send + Sync> =
+    let store: Arc<dyn TokenStore + Send + Sync> = match FileStore::from_default_path() {
+        Some(fs) => Arc::new(fs),
+        // Falls through to keyring as primary on systems where no home
+        // dir resolves — vanishingly rare in practice.
+        None => Arc::new(KeyringStore::new(config.keyring_service.clone())),
+    };
+    let legacy: Arc<dyn TokenStore + Send + Sync> =
         Arc::new(KeyringStore::new(config.keyring_service.clone()));
     ApiClient::new(config, store, args.account.clone())
+        .with_legacy_store(Some(legacy))
         .with_bearer_override(args.auth_token.clone())
 }
 
