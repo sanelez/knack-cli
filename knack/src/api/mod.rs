@@ -9,6 +9,7 @@
 //! this client.
 
 pub mod auth;
+pub mod feedback;
 pub mod folders;
 pub mod marketplace;
 pub mod runs;
@@ -16,7 +17,7 @@ pub mod skills;
 pub mod teams;
 pub mod users;
 
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 use reqwest::{Client, Method, RequestBuilder, StatusCode};
 use serde::{Deserialize, Serialize};
@@ -25,6 +26,36 @@ use serde_json::Value;
 use crate::auth_store::{StoredTokens, TokenStore};
 use crate::config::Config;
 use crate::errors::CliError;
+
+/// One-shot guard so the X-Knack-Notices banner prints at most once per
+/// process invocation, no matter how many API calls a single command
+/// fires. Re-running the binary clears it naturally.
+static NOTICES_BANNER_PRINTED: OnceLock<()> = OnceLock::new();
+
+/// Inspect a response for `X-Knack-Notices` and print a one-line stderr
+/// banner if the server flagged "feedback". The banner is intentionally
+/// quiet: stderr only (so `--json` stdout is untouched), once per
+/// process, and silent when the header is missing or empty.
+///
+/// The header is a comma-separated list of notice tokens so the server
+/// can layer in future ones (`feedback,deprecated_cli`, …) without
+/// breaking older CLIs.
+fn maybe_print_notices_banner(headers: &reqwest::header::HeaderMap) {
+    let Some(value) = headers.get("X-Knack-Notices") else {
+        return;
+    };
+    let Ok(text) = value.to_str() else {
+        return;
+    };
+    let tokens: Vec<&str> = text.split(',').map(|s| s.trim()).filter(|s| !s.is_empty()).collect();
+    if tokens.iter().any(|t| *t == "feedback") && NOTICES_BANNER_PRINTED.set(()).is_ok() {
+        // Stderr only — `--json` consumers reading stdout never see it.
+        // Format is plain ASCII so it renders sanely in dumb terminals.
+        eprintln!(
+            "knack: you have unread replies from staff. run `knack feedback list` to see them."
+        );
+    }
+}
 
 #[derive(Debug, Clone, Deserialize)]
 struct ApiErrorBody {
@@ -307,6 +338,7 @@ impl ApiClient {
         let resp = build(self)?.send().await?;
         let status = resp.status();
         if status.is_success() {
+            maybe_print_notices_banner(resp.headers());
             return decode_body(resp).await;
         }
         // Refresh once, retry once.
@@ -317,6 +349,7 @@ impl ApiClient {
             let resp2 = build(self)?.send().await?;
             let status2 = resp2.status();
             if status2.is_success() {
+                maybe_print_notices_banner(resp2.headers());
                 return decode_body(resp2).await;
             }
             let bytes2 = resp2.bytes().await.ok();
@@ -334,6 +367,7 @@ impl ApiClient {
         let resp = build(self)?.send().await?;
         let status = resp.status();
         if status.is_success() {
+            maybe_print_notices_banner(resp.headers());
             return Ok(());
         }
         if status == StatusCode::UNAUTHORIZED
@@ -343,6 +377,7 @@ impl ApiClient {
             let resp2 = build(self)?.send().await?;
             let status2 = resp2.status();
             if status2.is_success() {
+                maybe_print_notices_banner(resp2.headers());
                 return Ok(());
             }
             let bytes2 = resp2.bytes().await.ok();

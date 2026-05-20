@@ -7,6 +7,7 @@ pub mod debug;
 pub mod diff;
 pub mod docs;
 pub mod edit;
+pub mod feedback;
 pub mod folder;
 pub mod fork;
 pub mod info;
@@ -118,6 +119,12 @@ pub enum Command {
     /// Public/marketplace skills are not foldered.
     #[command(subcommand)]
     Folder(folder::FolderCmd),
+
+    /// Send a bug report or follow up on Knack staff's reply.
+    /// Threads are visible to both the user (in the web UI) and to
+    /// agents calling from this account's CLI.
+    #[command(subcommand)]
+    Feedback(feedback::FeedbackCmd),
 }
 
 /// Cross-cutting flags every subcommand inherits.
@@ -191,5 +198,6 @@ pub async fn dispatch(cmd: Command, client: ApiClient, mode: OutputMode) -> CliR
         Command::Sync(a) => sync::run(a, client.config, mode),
         Command::Team(c) => team::run(c, client, mode).await,
         Command::Folder(c) => folder::run(c, client, mode).await,
+        Command::Feedback(c) => feedback::run(c, client, mode).await,
     }
 }

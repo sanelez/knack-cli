@@ -283,7 +283,11 @@ pub fn remove_all_shims(target: &AgentTarget, root: &Path) -> io::Result<usize> 
                     Some(n) => n,
                     None => continue,
                 };
-                if !fname.starts_with("knack-") || !fname.ends_with(".mdc") {
+                // Match both the new meta-skill (`knack.mdc`) and any
+                // legacy per-skill shims (`knack-<slug>.mdc`).
+                let matches_meta = fname == "knack.mdc";
+                let matches_legacy = fname.starts_with("knack-") && fname.ends_with(".mdc");
+                if !(matches_meta || matches_legacy) {
                     continue;
                 }
                 if !file_carries_sigil(&path) {

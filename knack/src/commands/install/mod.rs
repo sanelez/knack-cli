@@ -1,16 +1,34 @@
 //! `knack install` — register knack with the AI agent on this machine.
 //!
-//! Appends a small "use knack for skill management" block to the agent's
-//! persistent context file (CLAUDE.md, AGENTS.md, .cursor/rules/knack.mdc,
-//! etc.) so the agent picks knack up automatically on its next turn.
+//! Writes a single "knack" meta-skill into the agent's native skill
+//! discovery surface so the runtime picks it up via progressive disclosure
+//! the next time the user mentions Knack or skill authoring:
 //!
-//! Idempotent: the block is delimited by HTML-comment sentinels, so re-runs
-//! splice in place without ever duplicating or clobbering surrounding user
-//! content. `--uninstall` removes it cleanly.
+//!   - NativeSkill targets (Claude Code, Codex, Cline, Kiro, Windsurf,
+//!     Trae, Gemini, OpenCode, Factory, Amp, Cowork): write
+//!     `<shim_root_home>/knack/SKILL.md`. The SKILL.md frontmatter
+//!     description is what triggers the runtime to load the body.
+//!
+//!   - NativeRule targets (Cursor): write `<shim_root_home>/knack.mdc`
+//!     with `alwaysApply: false` so Cursor's rule loader matches it on
+//!     description rather than always-loading.
+//!
+//!   - TextBlock targets (Aider, Continue.dev): no native skill discovery
+//!     exists, so we keep the legacy AppendBlock behavior — splice a
+//!     delimited block into the agent's free-form rules file
+//!     (CONVENTIONS.md, .continue/rules/knack.md).
+//!
+//!   - `generic` target: AGENTS.md fallback, same as TextBlock.
+//!
+//! Idempotent: re-runs overwrite the same path with identical bytes
+//! (no-op) or splice in place between sentinels. `--uninstall` removes
+//! both new-format meta-skill files AND any legacy install blocks /
+//! per-skill shims left over from pre-0.4 versions, so the cleanup is
+//! comprehensive even after migrations.
 //!
 //! Autodetect (when called with no arg or `--auto`): walk the target
-//! registry, take the first env-marker hit (e.g. `CLAUDECODE=1`), fall back
-//! to the first binary-on-PATH hit. Always also writes the generic
+//! registry, take the first env-marker hit (e.g. `CLAUDECODE=1`), fall
+//! back to the first binary-on-PATH hit. Always also writes the generic
 //! `~/.config/agents/AGENTS.md` as a safety net so a future AGENTS.md-aware
 //! agent picks knack up without re-installing.
 
@@ -29,7 +47,7 @@ use crate::errors::{CliError, CliResult};
 use crate::output::{emit_err, emit_ok, OutputMode};
 
 use installed::Scope;
-use targets::{AgentTarget, ConfigStyle};
+use targets::{AgentTarget, ConfigStyle, ShimStyle};
 
 #[derive(Debug, Args)]
 pub struct InstallArgs {
@@ -55,9 +73,17 @@ pub struct InstallArgs {
     pub uninstall: bool,
 }
 
-/// Rendered body for an agent target, including any frontmatter the target's
-/// style requires.
-const SNIPPET: &str = include_str!("snippet.md");
+/// Body of the Knack meta-skill (no frontmatter, no sigil — those are
+/// added by [`render_body`] based on the target's shim style).
+const META_SKILL_BODY: &str = include_str!("meta_skill.md");
+
+/// Description string that triggers progressive disclosure on relevant
+/// user intent. Lives next to the body so the two stay in sync. Kept
+/// short — Anthropic Skills convention is ~200 chars for descriptions.
+const META_SKILL_DESCRIPTION: &str = "For when the user mentions Knack \
+(getknack.ai), the `knack` CLI, the Anthropic Skills format, or wants \
+to teach a repeatable agent task. Portable CLI for authoring and running \
+skills.";
 
 pub fn run(args: InstallArgs, mode: OutputMode) -> CliResult<()> {
     if args.uninstall {
@@ -126,14 +152,13 @@ fn apply(targets: &[&'static AgentTarget], dry_run: bool) -> Vec<TargetOutcome> 
         .iter()
         .map(|t| {
             let body = render_body(t);
-            let path = (t.config_path)();
-            let Some(path) = path else {
+            let Some(path) = install_path_for_target(t) else {
                 return TargetOutcome {
                     name: t.name,
                     display: t.display,
                     path: None,
                     body,
-                    status: Status::Skipped("no config path on this OS".into()),
+                    status: Status::Skipped("no install path on this OS".into()),
                 };
             };
             if dry_run {
@@ -145,9 +170,15 @@ fn apply(targets: &[&'static AgentTarget], dry_run: bool) -> Vec<TargetOutcome> 
                     status: Status::DryRun,
                 };
             }
-            let res = match t.style {
-                ConfigStyle::AppendBlock => block::upsert(&path, &body),
-                ConfigStyle::WriteFile => write_full(&path, &body),
+            // NativeSkill / NativeRule: write a full SKILL.md or .mdc
+            // file (overwrite). TextBlock / None fall back to the legacy
+            // splice-block-into-context-file behavior at config_path.
+            let res = match t.shim_style {
+                ShimStyle::NativeSkill | ShimStyle::NativeRule => write_full(&path, &body),
+                ShimStyle::TextBlock | ShimStyle::None => match t.style {
+                    ConfigStyle::AppendBlock => block::upsert(&path, &body),
+                    ConfigStyle::WriteFile => write_full(&path, &body),
+                },
             };
             let status = match res {
                 Ok(true) => Status::Wrote,
@@ -155,13 +186,18 @@ fn apply(targets: &[&'static AgentTarget], dry_run: bool) -> Vec<TargetOutcome> 
                 Err(e) => Status::Skipped(format!("write failed: {e}")),
             };
 
-            // Record the install so `sync` knows which agents to refresh
-            // after every pull. We do this on `Wrote` *and* `UpToDate`
-            // because the latter means "already installed" which is
-            // exactly the state the record should reflect. Scope is
-            // inferred from whether the config_path lives under HOME.
+            // Record the install so `sync` and `--uninstall` can find
+            // the file later without recomputing the path. Both `Wrote`
+            // and `UpToDate` mean "the target is installed at this
+            // path", which is the state the record should reflect.
+            // NativeSkill / NativeRule are always HOME-scoped (we write
+            // into the user-level skill directory); for TextBlock /
+            // None we infer from where the path lives.
             if matches!(status, Status::Wrote | Status::UpToDate) {
-                let scope = infer_scope(&path);
+                let scope = match t.shim_style {
+                    ShimStyle::NativeSkill | ShimStyle::NativeRule => Scope::Home,
+                    _ => infer_scope(&path),
+                };
                 let _ = installed::add(t.name, scope, path.clone());
             }
 
@@ -193,14 +229,12 @@ fn run_uninstall(mode: OutputMode) -> CliResult<()> {
     let mut removed: Vec<(&'static str, String)> = Vec::new();
     let mut shims_removed: usize = 0;
     for t in targets::TARGETS {
-        let Some(path) = (t.config_path)() else {
-            continue;
-        };
-
-        // Remove every per-skill shim for this target before stripping
-        // the install block. Run for both possible scopes — the user
-        // may have installed at HOME and pulled some skills as
-        // workspace-local, so both scopes may have shims.
+        // 1. Sweep the runtime's native skill / rule directory. This
+        //    catches the new-format meta-skill (`<root>/knack/SKILL.md`,
+        //    `<root>/knack.mdc`) AND any legacy per-skill shims
+        //    (`<root>/<slug>/SKILL.md`, `knack-<slug>.mdc`) left over
+        //    from pre-0.4 installs. Both scopes — user may have
+        //    installed at HOME and pulled some skills workspace-local.
         for scope in [Scope::Home, Scope::Project] {
             if let Some(root) = (t.shim_root)(scope) {
                 if let Ok(n) = shim::remove_all_shims(t, &root) {
@@ -209,17 +243,36 @@ fn run_uninstall(mode: OutputMode) -> CliResult<()> {
             }
         }
 
-        let did = match t.style {
-            ConfigStyle::WriteFile => path.exists() && std::fs::remove_file(&path).is_ok(),
-            ConfigStyle::AppendBlock => block::remove(&path).unwrap_or(false),
-        };
-        if did {
-            removed.push((t.name, path.display().to_string()));
+        // 2. Strip any legacy install block from the agent's general
+        //    context file (`config_path`). For NativeSkill / NativeRule
+        //    targets this is a backwards-compat sweep — the new install
+        //    no longer writes there, but pre-0.4 versions did, and we
+        //    want `--uninstall` to leave nothing behind. For TextBlock /
+        //    None targets this is still the primary install location.
+        if let Some(path) = (t.config_path)() {
+            let did = match t.style {
+                ConfigStyle::WriteFile => {
+                    // Only delete WriteFile config_paths that aren't
+                    // already covered by the shim sweep above. Cursor's
+                    // config_path equals its shim_root + knack.mdc, so
+                    // step 1 already handled it; deleting again would
+                    // be a no-op but the existence check avoids spurious
+                    // logging.
+                    if path.exists() && t.shim_style == ShimStyle::None {
+                        std::fs::remove_file(&path).is_ok()
+                    } else {
+                        false
+                    }
+                }
+                ConfigStyle::AppendBlock => block::remove(&path).unwrap_or(false),
+            };
+            if did {
+                removed.push((t.name, path.display().to_string()));
+            }
         }
 
-        // Whether or not the install block was present, drop the
-        // installed.json entry so future syncs don't target a runtime
-        // we just walked away from.
+        // 3. Drop the installed.json entry so future syncs don't target
+        //    a runtime we just walked away from.
         let _ = installed::remove(t.name);
     }
     if mode.json {
@@ -260,13 +313,50 @@ fn write_full(path: &std::path::Path, body: &str) -> std::io::Result<bool> {
     Ok(true)
 }
 
+/// Render the install body for a target. Format depends on shim style:
+///
+///   - NativeSkill → SKILL.md (sigil + frontmatter with name/description
+///     + body). Loaded by the agent's native skill discovery on session
+///     start; the description triggers progressive disclosure.
+///   - NativeRule → Cursor `.mdc` (sigil + frontmatter with description
+///     + alwaysApply:false + body). Description-matched, not always-on.
+///   - TextBlock / None → plain markdown body (no frontmatter). Spliced
+///     into a free-form rules file via [`block::upsert`].
 fn render_body(target: &AgentTarget) -> String {
-    match target.style {
-        ConfigStyle::WriteFile => format!(
-            "---\ndescription: Use the knack CLI for portable skill management\nalwaysApply: true\n---\n\n{}",
-            SNIPPET.trim_end_matches('\n')
+    let body = META_SKILL_BODY.trim_end_matches('\n');
+    match target.shim_style {
+        ShimStyle::NativeSkill => format!(
+            "{sigil}\n---\nname: knack\ndescription: {desc}\n---\n\n{body}\n",
+            sigil = shim::SHIM_SIGIL,
+            desc = META_SKILL_DESCRIPTION,
         ),
-        ConfigStyle::AppendBlock => SNIPPET.trim_end_matches('\n').to_string(),
+        ShimStyle::NativeRule => format!(
+            "{sigil}\n---\ndescription: {desc}\nalwaysApply: false\n---\n\n{body}\n",
+            sigil = shim::SHIM_SIGIL,
+            desc = META_SKILL_DESCRIPTION,
+        ),
+        ShimStyle::TextBlock | ShimStyle::None => match target.style {
+            ConfigStyle::WriteFile => format!(
+                "---\ndescription: Use the knack CLI for portable skill management\nalwaysApply: true\n---\n\n{body}",
+            ),
+            ConfigStyle::AppendBlock => body.to_string(),
+        },
+    }
+}
+
+/// Where the install body for `target` should land. Differs from
+/// `target.config_path()` for NativeSkill / NativeRule targets — those
+/// now write a meta-skill file inside the runtime's native skill
+/// directory, NOT a block into the agent's general context file.
+fn install_path_for_target(target: &AgentTarget) -> Option<PathBuf> {
+    match target.shim_style {
+        ShimStyle::NativeSkill => {
+            (target.shim_root)(Scope::Home).map(|r| r.join("knack").join("SKILL.md"))
+        }
+        ShimStyle::NativeRule => {
+            (target.shim_root)(Scope::Home).map(|r| r.join("knack.mdc"))
+        }
+        ShimStyle::TextBlock | ShimStyle::None => (target.config_path)(),
     }
 }
 
@@ -286,22 +376,64 @@ mod tests {
     }
 
     #[test]
-    fn render_body_writefile_has_mdc_frontmatter() {
-        let cursor = targets::find("cursor").expect("cursor target registered");
-        assert_eq!(cursor.style, ConfigStyle::WriteFile);
-        let body = render_body(cursor);
-        assert!(body.starts_with("---\n"));
-        assert!(body.contains("alwaysApply: true"));
+    fn render_body_native_skill_emits_skill_md_with_sigil_and_frontmatter() {
+        // Claude is a NativeSkill target — render should produce a
+        // SKILL.md that the runtime's progressive disclosure can load.
+        let claude = targets::find("claude").expect("claude target registered");
+        assert_eq!(claude.shim_style, ShimStyle::NativeSkill);
+        let body = render_body(claude);
+        assert!(body.starts_with(shim::SHIM_SIGIL), "missing sigil: {body}");
+        assert!(body.contains("name: knack"));
+        assert!(body.contains("description: For when the user"));
+        assert!(body.contains("knack list"));
         assert!(body.contains("knack info"));
     }
 
     #[test]
-    fn render_body_appendblock_has_no_frontmatter() {
-        let claude = targets::find("claude").expect("claude target registered");
-        assert_eq!(claude.style, ConfigStyle::AppendBlock);
-        let body = render_body(claude);
-        assert!(!body.starts_with("---\n"));
+    fn render_body_native_rule_emits_mdc_with_alwaysapply_false() {
+        // Cursor is the NativeRule target — its meta-skill should be a
+        // description-matched rule, not always-on.
+        let cursor = targets::find("cursor").expect("cursor target registered");
+        assert_eq!(cursor.shim_style, ShimStyle::NativeRule);
+        let body = render_body(cursor);
+        assert!(body.starts_with(shim::SHIM_SIGIL), "missing sigil: {body}");
+        assert!(body.contains("alwaysApply: false"));
+        assert!(body.contains("description: For when the user"));
         assert!(body.contains("knack info"));
+    }
+
+    #[test]
+    fn render_body_textblock_is_plain_markdown_no_frontmatter() {
+        // Aider / Continue are TextBlock targets — no native skill
+        // discovery, so the body is plain markdown spliced into a
+        // free-form rules file (no frontmatter, no sigil).
+        let aider = targets::find("aider").expect("aider target registered");
+        assert_eq!(aider.shim_style, ShimStyle::TextBlock);
+        let body = render_body(aider);
+        assert!(!body.starts_with("---"), "TextBlock body should not have frontmatter");
+        assert!(!body.starts_with(shim::SHIM_SIGIL), "TextBlock body should not have shim sigil");
+        assert!(body.contains("knack list"));
+        assert!(body.contains("knack info"));
+    }
+
+    #[test]
+    fn install_path_native_skill_lands_in_skills_subdir() {
+        let claude = targets::find("claude").expect("claude target registered");
+        let path = install_path_for_target(claude).expect("path resolvable");
+        // Should end with `<runtime>/skills/knack/SKILL.md`, NOT
+        // `<runtime>/CLAUDE.md` (the legacy install-block location).
+        let s = path.display().to_string();
+        assert!(s.ends_with("knack/SKILL.md") || s.ends_with("knack\\SKILL.md"), "got {s}");
+        assert!(s.contains("skills"), "got {s}");
+    }
+
+    #[test]
+    fn install_path_native_rule_lands_at_bare_knack_mdc() {
+        let cursor = targets::find("cursor").expect("cursor target registered");
+        let path = install_path_for_target(cursor).expect("path resolvable");
+        let s = path.display().to_string();
+        // `knack.mdc` (meta-skill), NOT `knack-<slug>.mdc` (legacy per-skill).
+        assert!(s.ends_with("knack.mdc"), "got {s}");
     }
 
     #[test]

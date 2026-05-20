@@ -33,8 +33,11 @@ pub struct LoginArgs {
 
     /// Stateless mode: print the device_code + verification_uri as JSON and
     /// exit immediately. Pair with `--poll <device_code>` to check status.
-    /// Use this when running inside an agent sandbox that kills long-running
-    /// background processes (e.g. Claude Cowork's bwrap --die-with-parent).
+    /// Use this only when you genuinely can't keep a tool call alive for the
+    /// device-code TTL (~5 min). For most agents the default blocking flow is
+    /// simpler — it opens the browser, polls in-process, and returns when the
+    /// user approves. Reach for `--start` for headless CI or for sandboxes
+    /// that hard-cap subprocess lifetime below the device-code TTL.
     #[arg(long, conflicts_with = "poll")]
     pub start: bool,
 
@@ -76,6 +79,11 @@ async fn login_start(client: ApiClient, mode: OutputMode) -> CliResult<()> {
             return Err(e);
         }
     };
+    // Best-effort browser open — same as the blocking flow. Stateless mode
+    // is typically used by agents in sandboxes where xdg-open / `open` /
+    // `start` may be unavailable; if that's the case the call fails
+    // silently and the printed URL is the fallback the human follows.
+    let _ = webbrowser::open(&start.verification_uri);
     emit_ok(
         mode,
         json!({
