@@ -140,3 +140,6 @@ if "$BIN_DIR/knack" install --auto >/dev/null 2>&1; then
 else
     echo "  Tip: run \`knack install\` to register the CLI with your AI agent."
 fi
+
+echo
+echo "To uninstall later: curl -fsSL https://cli.getknack.ai/uninstall.sh | sh"

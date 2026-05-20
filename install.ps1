@@ -89,3 +89,6 @@ try {
 } catch {
     Write-Host "  Tip: run 'knack install' to register the CLI with your AI agent."
 }
+
+Write-Host ""
+Write-Host "To uninstall later: iwr https://cli.getknack.ai/uninstall.ps1 | iex"

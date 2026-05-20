@@ -23,6 +23,8 @@ pub mod run;
 pub mod search;
 pub mod sync;
 pub mod team;
+pub mod uninstall;
+pub mod upgrade;
 pub mod username;
 pub mod validate;
 
@@ -87,6 +89,16 @@ pub enum Command {
 
     /// Register knack with the AI agent on this machine (Claude Code, Codex, Cursor, ...)
     Install(install::InstallArgs),
+
+    /// Reverse install: strip shim blocks, clear auth, point at the
+    /// platform script for binary removal. Pass `--script` to print the
+    /// one-liner for full removal without self-replace concerns.
+    Uninstall(uninstall::UninstallArgs),
+
+    /// Upgrade knack to the latest version via the platform install
+    /// script. Self-replaces on macOS/Linux; on Windows prints the
+    /// one-liner to run in a fresh shell.
+    Upgrade(upgrade::UpgradeArgs),
 
     /// Scaffold a workspace-local `.knack/` (skills/, drafts/, .gitignore, README).
     Init(init::InitArgs),
@@ -200,6 +212,8 @@ pub async fn dispatch(cmd: Command, client: ApiClient, mode: OutputMode) -> CliR
         Command::Completions(a) => completions::run(a, mode),
         Command::Debug(a) => debug::run(a, client, mode),
         Command::Install(a) => install::run(a, mode),
+        Command::Uninstall(a) => uninstall::run(a, client, mode).await,
+        Command::Upgrade(a) => upgrade::run(a, mode),
         Command::Init(a) => init::run(a, mode),
         Command::Info(a) => info::run(a, mode).await,
         Command::Validate(a) => validate::run(a, mode),
