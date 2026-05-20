@@ -86,7 +86,7 @@ pub struct InstallArgs {
 /// as-is (NativeSkill), re-wrap its body in `.mdc` frontmatter
 /// (NativeRule), or strip the frontmatter and ship plain markdown
 /// (TextBlock / None).
-const META_SKILL_FULL: &str = include_str!("../../../../../../skills/knack/SKILL.md");
+const META_SKILL_FULL: &str = include_str!("../../../../../../knack/SKILL.md");
 
 pub fn run(args: InstallArgs, mode: OutputMode) -> CliResult<()> {
     if args.uninstall {
