@@ -45,6 +45,7 @@ use serde_json::json;
 
 use crate::errors::{CliError, CliResult};
 use crate::output::{emit_err, emit_ok, OutputMode};
+use crate::skill_pack::parse_skill_md_frontmatter;
 
 use installed::Scope;
 use targets::{AgentTarget, ConfigStyle, ShimStyle};
@@ -73,17 +74,19 @@ pub struct InstallArgs {
     pub uninstall: bool,
 }
 
-/// Body of the Knack meta-skill (no frontmatter, no sigil — those are
-/// added by [`render_body`] based on the target's shim style).
-const META_SKILL_BODY: &str = include_str!("meta_skill.md");
-
-/// Description string that triggers progressive disclosure on relevant
-/// user intent. Lives next to the body so the two stay in sync. Kept
-/// short — Anthropic Skills convention is ~200 chars for descriptions.
-const META_SKILL_DESCRIPTION: &str = "For when the user mentions Knack \
-(getknack.ai), the `knack` CLI, the Anthropic Skills format, or wants \
-to teach a repeatable agent task. Portable CLI for authoring and running \
-skills.";
+/// The Knack meta-skill in canonical SKILL.md form (frontmatter + body).
+///
+/// Single source of truth for both this CLI and the public install
+/// target at https://github.com/knack-skills/knack/blob/main/skills/knack/SKILL.md
+/// (mirrored manually on edit). Codex's built-in `skill-installer`
+/// fetches the public copy; this constant is what `knack install`
+/// writes when running on local agents.
+///
+/// `render_body` decides per shim style whether to ship this file
+/// as-is (NativeSkill), re-wrap its body in `.mdc` frontmatter
+/// (NativeRule), or strip the frontmatter and ship plain markdown
+/// (TextBlock / None).
+const META_SKILL_FULL: &str = include_str!("../../../../../../skills/knack/SKILL.md");
 
 pub fn run(args: InstallArgs, mode: OutputMode) -> CliResult<()> {
     if args.uninstall {
@@ -313,34 +316,78 @@ fn write_full(path: &std::path::Path, body: &str) -> std::io::Result<bool> {
     Ok(true)
 }
 
+/// Strip YAML frontmatter from a SKILL.md string and return the body.
+/// Returns the input unchanged if there's no `---` fence, no closing
+/// fence, or only a BOM. Doesn't allocate when there's nothing to strip.
+fn strip_skill_md_frontmatter(skill_md: &str) -> &str {
+    let trimmed = skill_md.trim_start_matches('\u{feff}');
+    let after_bom = &skill_md[skill_md.len() - trimmed.len()..];
+    if !trimmed.starts_with("---") {
+        return after_bom;
+    }
+    // Skip the opening `---` line.
+    let Some(first_nl) = trimmed.find('\n') else {
+        return after_bom;
+    };
+    let after_open = &trimmed[first_nl + 1..];
+    // Find the closing `---` (or `...`) on its own line.
+    let mut byte = 0usize;
+    for line in after_open.split_inclusive('\n') {
+        let s = line.trim_end_matches(['\r', '\n']);
+        if s == "---" || s == "..." {
+            return after_open[byte + line.len()..].trim_start_matches(['\r', '\n']);
+        }
+        byte += line.len();
+    }
+    after_bom
+}
+
+/// Pull the `description:` field out of a SKILL.md's frontmatter.
+/// Used by NativeRule rendering to bake the same description into the
+/// `.mdc` wrapper. Returns a generic fallback if parsing fails.
+fn meta_skill_description() -> String {
+    match parse_skill_md_frontmatter(META_SKILL_FULL) {
+        Ok(Some(fm)) => fm.description.unwrap_or_else(|| {
+            "Use the knack CLI for portable agent skill management".into()
+        }),
+        _ => "Use the knack CLI for portable agent skill management".into(),
+    }
+}
+
 /// Render the install body for a target. Format depends on shim style:
 ///
-///   - NativeSkill → SKILL.md (sigil + frontmatter with name/description
-///     + body). Loaded by the agent's native skill discovery on session
-///     start; the description triggers progressive disclosure.
-///   - NativeRule → Cursor `.mdc` (sigil + frontmatter with description
-///     + alwaysApply:false + body). Description-matched, not always-on.
-///   - TextBlock / None → plain markdown body (no frontmatter). Spliced
-///     into a free-form rules file via [`block::upsert`].
+///   - NativeSkill → ship META_SKILL_FULL as-is with sigil prepended.
+///     Loaded by the agent's native skill discovery on session start;
+///     the SKILL.md's frontmatter description triggers progressive
+///     disclosure.
+///   - NativeRule → strip the SKILL.md frontmatter, wrap the body in
+///     Cursor `.mdc` frontmatter (description + alwaysApply:false) with
+///     sigil prepended. Description-matched, not always-on.
+///   - TextBlock / None → strip the SKILL.md frontmatter and ship plain
+///     markdown body. Spliced into a free-form rules file via
+///     [`block::upsert`].
 fn render_body(target: &AgentTarget) -> String {
-    let body = META_SKILL_BODY.trim_end_matches('\n');
     match target.shim_style {
         ShimStyle::NativeSkill => format!(
-            "{sigil}\n---\nname: knack\ndescription: {desc}\n---\n\n{body}\n",
+            "{sigil}\n{full}",
             sigil = shim::SHIM_SIGIL,
-            desc = META_SKILL_DESCRIPTION,
+            full = META_SKILL_FULL.trim_start_matches('\u{feff}'),
         ),
         ShimStyle::NativeRule => format!(
-            "{sigil}\n---\ndescription: {desc}\nalwaysApply: false\n---\n\n{body}\n",
+            "{sigil}\n---\ndescription: {desc}\nalwaysApply: false\n---\n\n{body}",
             sigil = shim::SHIM_SIGIL,
-            desc = META_SKILL_DESCRIPTION,
+            desc = meta_skill_description(),
+            body = strip_skill_md_frontmatter(META_SKILL_FULL).trim_start(),
         ),
-        ShimStyle::TextBlock | ShimStyle::None => match target.style {
-            ConfigStyle::WriteFile => format!(
-                "---\ndescription: Use the knack CLI for portable skill management\nalwaysApply: true\n---\n\n{body}",
-            ),
-            ConfigStyle::AppendBlock => body.to_string(),
-        },
+        ShimStyle::TextBlock | ShimStyle::None => {
+            let body = strip_skill_md_frontmatter(META_SKILL_FULL).trim_start();
+            match target.style {
+                ConfigStyle::WriteFile => format!(
+                    "---\ndescription: Use the knack CLI for portable skill management\nalwaysApply: true\n---\n\n{body}",
+                ),
+                ConfigStyle::AppendBlock => body.trim_end_matches('\n').to_string(),
+            }
+        }
     }
 }
 
