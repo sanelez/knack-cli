@@ -223,33 +223,89 @@ pub struct FolderIndexEntry {
     pub slugs: Vec<String>,
 }
 
+/// Current on-disk schema version for `folders.json`. Bump when the
+/// shape changes incompatibly so older / future CLIs can refuse to
+/// silently corrupt the file. Migrations from older shapes happen in
+/// `read_folders_index` — see the version-match arms there.
+pub const FOLDERS_INDEX_VERSION: u32 = 1;
+
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct FoldersIndex {
+    /// Schema version. Older shapes (no `version` field) read as `0`
+    /// via serde default and trigger the "rebuild from cloud" fallback.
+    #[serde(default)]
+    pub version: u32,
     #[serde(default)]
     pub folders: Vec<FolderIndexEntry>,
 }
 
+impl FoldersIndex {
+    pub fn current() -> Self {
+        Self {
+            version: FOLDERS_INDEX_VERSION,
+            folders: Vec::new(),
+        }
+    }
+}
+
 /// Read the workspace's folder index. Missing file returns an empty
 /// index — folder assignment is a new feature, plenty of workspaces
-/// won't have it yet.
+/// won't have it yet. **Malformed** files return an empty index (with
+/// a stderr warning); they'll be repopulated on the next `knack pull`
+/// or folder write. We never want a corrupt cache file to brick the
+/// whole CLI.
+///
+/// Version handling:
+///
+///   * `version == FOLDERS_INDEX_VERSION (1)` — current shape, return as-is.
+///   * `version == 0` (legacy / pre-versioning files) — accept the
+///     entries we can read, stamp the current version. The shape
+///     hasn't actually changed yet, so legacy files are
+///     forward-compatible; we just want the stamp going forward.
+///   * `version > FOLDERS_INDEX_VERSION` — a newer CLI wrote this
+///     file. Refuse to interpret it and warn; the next write of the
+///     index by this older CLI would silently downgrade it, so we
+///     return a fresh empty index and let `knack pull` repopulate.
 pub fn read_folders_index(workspace: &Path) -> io::Result<FoldersIndex> {
     let path = workspace.join(FOLDERS_INDEX_FILE);
     match fs::read_to_string(&path) {
-        Ok(s) => serde_json::from_str(&s).map_err(|e| {
-            io::Error::new(io::ErrorKind::InvalidData, format!("{path:?}: {e}"))
-        }),
-        Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(FoldersIndex::default()),
+        Ok(s) => match serde_json::from_str::<FoldersIndex>(&s) {
+            Ok(idx) if idx.version == FOLDERS_INDEX_VERSION => Ok(idx),
+            Ok(mut idx) if idx.version == 0 => {
+                // Pre-versioning file. Same shape; just adopt it.
+                idx.version = FOLDERS_INDEX_VERSION;
+                Ok(idx)
+            }
+            Ok(idx) => {
+                eprintln!(
+                    "knack: ignoring {path:?} — schema version {} not understood (current: {}); will rebuild on next pull",
+                    idx.version, FOLDERS_INDEX_VERSION
+                );
+                Ok(FoldersIndex::current())
+            }
+            Err(e) => {
+                eprintln!(
+                    "knack: ignoring {path:?} — malformed JSON ({e}); will rebuild on next pull"
+                );
+                Ok(FoldersIndex::current())
+            }
+        },
+        Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(FoldersIndex::current()),
         Err(e) => Err(e),
     }
 }
 
 /// Persist the folder index atomically (tempfile + rename in the same
 /// dir, mirroring ``commands/install/installed.rs`` so a crash mid-write
-/// never leaves a half-written JSON blob).
+/// never leaves a half-written JSON blob). Stamps the current schema
+/// version on the way out so future CLIs can read it back via the
+/// version-aware loader.
 pub fn write_folders_index(workspace: &Path, idx: &FoldersIndex) -> io::Result<()> {
     fs::create_dir_all(workspace)?;
     let path = workspace.join(FOLDERS_INDEX_FILE);
-    let body = serde_json::to_string_pretty(idx)
+    let mut out = idx.clone();
+    out.version = FOLDERS_INDEX_VERSION;
+    let body = serde_json::to_string_pretty(&out)
         .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
     let tmp = path.with_extension(format!("json.{}.tmp", std::process::id()));
     fs::write(&tmp, body)?;
