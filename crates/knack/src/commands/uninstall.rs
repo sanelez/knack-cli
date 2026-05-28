@@ -26,8 +26,8 @@ use crate::errors::CliResult;
 use crate::output::{emit_ok, OutputMode};
 use crate::update_check;
 
-const UNINSTALL_PS1_URL: &str = "https://cli.getknack.ai/uninstall.ps1";
-const UNINSTALL_SH_URL: &str = "https://cli.getknack.ai/uninstall.sh";
+const UNINSTALL_PS1_URL: &str = "https://getknack.ai/uninstall.ps1";
+const UNINSTALL_SH_URL: &str = "https://getknack.ai/uninstall.sh";
 
 #[derive(Debug, Args)]
 pub struct UninstallArgs {
@@ -266,9 +266,9 @@ fn print_binary_removal_hint(binary_path: Option<&PathBuf>) {
 
 fn platform_script_oneliner() -> &'static str {
     if cfg!(target_os = "windows") {
-        "iwr https://cli.getknack.ai/uninstall.ps1 | iex"
+        "iwr https://getknack.ai/uninstall.ps1 | iex"
     } else {
-        "curl -fsSL https://cli.getknack.ai/uninstall.sh | sh"
+        "curl -fsSL https://getknack.ai/uninstall.sh | sh"
     }
 }
 

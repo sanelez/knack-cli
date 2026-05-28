@@ -2,12 +2,12 @@
 //!
 //! Thin wrapper around the platform install one-liner:
 //!
-//!   * macOS / Linux: `curl -fsSL https://cli.getknack.ai/install.sh | sh`
+//!   * macOS / Linux: `curl -fsSL https://getknack.ai/install.sh | sh`
 //!     POSIX `unlink + rename` lets the running binary be replaced
 //!     safely while it executes (the current process keeps its inode),
 //!     so `--run` defaults to true on these platforms.
 //!
-//!   * Windows: `iwr https://cli.getknack.ai/install.ps1 | iex`
+//!   * Windows: `iwr https://getknack.ai/install.ps1 | iex`
 //!     The running `knack.exe` is file-locked. Self-replacement would
 //!     deadlock; this command always prints the one-liner and exits
 //!     without running it. The user pipes it into a fresh PowerShell.
@@ -24,8 +24,8 @@ use serde_json::json;
 use crate::errors::{CliError, CliResult};
 use crate::output::{emit_err, emit_ok, OutputMode};
 
-const INSTALL_SH_CMD: &str = "curl -fsSL https://cli.getknack.ai/install.sh | sh";
-const INSTALL_PS1_CMD: &str = "iwr https://cli.getknack.ai/install.ps1 | iex";
+const INSTALL_SH_CMD: &str = "curl -fsSL https://getknack.ai/install.sh | sh";
+const INSTALL_PS1_CMD: &str = "iwr https://getknack.ai/install.ps1 | iex";
 
 #[derive(Debug, Args)]
 pub struct UpgradeArgs {
