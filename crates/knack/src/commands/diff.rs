@@ -1,6 +1,9 @@
 //! `knack diff <slug>@<a> <slug>@<b>` — diff two versions of a skill.
 //!
-//! Comparison surface: SKILL.md, intuition.md, meta.knack.yaml. Output formats:
+//! Comparison surface: SKILL.md and meta.knack.yaml are always compared.
+//! intuition.md is back-compat only — diffed when either side has a
+//! non-empty value (legacy skills authored before rules moved inside
+//! SKILL.md's `## Intuition` section). Output formats:
 //!  - human (ANSI line diff via `similar`)
 //!  - json (structured per-file unified diff string)
 

@@ -31,6 +31,10 @@ const MANIFEST_VERSION: u32 = 1;
 
 // Keep these lists in lockstep with apps/api/knack_api/skill_format/pack.py.
 const REQUIRED_FILES: &[&str] = &["SKILL.md", "meta.knack.yaml"];
+// intuition.md is back-compat only — legacy skills authored before rules
+// moved inside SKILL.md's `## Intuition` section. The scaffolder no longer
+// creates one; the packer still accepts one if the user's folder happens
+// to have it (pulled from an older cloud version, etc.).
 const OPTIONAL_FILES: &[&str] = &["intuition.md"];
 const OPTIONAL_DIRS: &[&str] = &["tests", "examples", "scripts", "assets", "references"];
 

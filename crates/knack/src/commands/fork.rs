@@ -139,14 +139,18 @@ pub async fn run(args: ForkArgs, client: ApiClient, mode: OutputMode) -> CliResu
         mode_label = "bundle";
     } else {
         // No packed bundle on the source (legacy pre-V2a row). Fall back
-        // to writing the three canonical text files — same shape as the
-        // legacy branch in `knack pull`.
+        // to writing the canonical text files — same shape as the legacy
+        // branch in `knack pull`. intuition.md is only written when the
+        // source row actually has non-empty content; new skills keep
+        // intuition inside SKILL.md under `## Intuition`.
         let mut acc = Vec::new();
         acc.extend(write_if_changed(&dir.join("SKILL.md"), &version.skill_md)?);
-        acc.extend(write_if_changed(
-            &dir.join("intuition.md"),
-            &version.intuition_md,
-        )?);
+        if !version.intuition_md.trim().is_empty() {
+            acc.extend(write_if_changed(
+                &dir.join("intuition.md"),
+                &version.intuition_md,
+            )?);
+        }
         acc.extend(write_if_changed(
             &dir.join("meta.knack.yaml"),
             &version.meta_yaml,

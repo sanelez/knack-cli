@@ -5,11 +5,13 @@
 //!
 //! With `--scaffold <dir>` (the default if the flag is omitted but `--name` is
 //! present? No — explicit opt-in to avoid surprising existing scripts), also
-//! writes a complete starter folder: SKILL.md with frontmatter, meta.knack.yaml
-//! with the four required MetaKnack fields (id, name, slug, author), an
-//! intuition.md stub, and an empty examples/ dir. The agent can immediately
-//! `knack validate <dir>` + `knack publish <slug> --from <dir>` without
-//! having to know the meta schema.
+//! writes a complete starter folder: SKILL.md with frontmatter + an explicit
+//! `## Intuition` section (with `### Always` / `### Except when` /
+//! `### Edge cases` subsections the interview will populate),
+//! meta.knack.yaml with the four required MetaKnack fields (id, name, slug,
+//! author), and an empty examples/ dir. Intuition lives in SKILL.md, not in
+//! a sidecar file; older skills that still ship intuition.md are tolerated
+//! by the pack/publish path for back-compat.
 
 use std::path::{Path, PathBuf};
 
@@ -197,12 +199,15 @@ fn write_scaffold(
 
     let skill_md = render_skill_md(name, description);
     let meta_yaml = render_meta_yaml(skill_id, name, slug, author_email);
-    let intuition_md = render_intuition_md();
     let examples_readme = render_examples_readme();
 
+    // Intuition is a section INSIDE SKILL.md, not a separate file. Skills
+    // pulled from older cloud versions may still ship an intuition.md
+    // sidecar; the pack/publish paths tolerate it for back-compat but the
+    // scaffolder no longer creates one. (See SKILL.md's `## Intuition`
+    // section in render_skill_md.)
     std::fs::write(dir.join("SKILL.md"), skill_md).map_err(io)?;
     std::fs::write(dir.join("meta.knack.yaml"), meta_yaml).map_err(io)?;
-    std::fs::write(dir.join("intuition.md"), intuition_md).map_err(io)?;
     std::fs::write(dir.join("examples").join("README.md"), examples_readme).map_err(io)?;
     Ok(())
 }
@@ -213,8 +218,16 @@ fn render_skill_md(name: &str, description: &str) -> String {
          # How to do it\n\n\
          Replace this with the step-by-step procedure. Keep it concrete.\n\n\
          # Intuition\n\n\
-         Replace this with the judgment calls and edge cases that make this skill \
-         non-obvious. See intuition.md for the long-form scenario list.\n\n\
+         The judgment calls, edge cases, and exceptions that make this skill \
+         non-obvious. Capture rules inline below as the interview reveals them; \
+         these survive into every future run.\n\n\
+         ## Always\n\n\
+         - Rules that hold on every run. Keep them imperative and specific.\n\n\
+         ## Except when\n\n\
+         - Carve-outs from the Always rules. Say how to detect each case.\n\n\
+         ## Edge cases\n\n\
+         - Weird inputs, conflicting signals, things you'd only know from \
+         doing this work in production.\n\n\
          # Definition of done\n\n\
          Replace this with the criteria that say the work is finished.\n"
     )
@@ -229,13 +242,6 @@ fn render_meta_yaml(skill_id: &str, name: &str, slug: &str, author: &str) -> Str
          slug: {slug}\n\
          author: {author}\n"
     )
-}
-
-fn render_intuition_md() -> String {
-    "## Scenarios\n\n\
-     - Replace each bullet with a realistic case the skill needs to handle.\n\
-     - The more specific and unusual, the better — these become the test cases.\n"
-        .to_string()
 }
 
 fn render_examples_readme() -> String {
@@ -368,7 +374,7 @@ mod tests {
     }
 
     #[test]
-    fn scaffold_writes_all_four_required_files() {
+    fn scaffold_writes_three_required_files() {
         let tmp = tempfile::tempdir().unwrap();
         let dir = tmp.path().join("skill");
         write_scaffold(
@@ -382,7 +388,9 @@ mod tests {
         .unwrap();
         assert!(dir.join("SKILL.md").exists());
         assert!(dir.join("meta.knack.yaml").exists());
-        assert!(dir.join("intuition.md").exists());
+        // intuition.md is no longer scaffolded; intuition lives inside
+        // SKILL.md under `## Intuition`.
+        assert!(!dir.join("intuition.md").exists());
         assert!(dir.join("examples").join("README.md").exists());
 
         let meta = std::fs::read_to_string(dir.join("meta.knack.yaml")).unwrap();
@@ -441,8 +449,19 @@ async fn github_create(
         .clone()
         .unwrap_or_else(|| format!("(describe what '{}' does in one sentence)", args.slug));
 
+    // Intuition is a SECTION inside SKILL.md, not a separate file. The
+    // interview's intuition phase appends rules into the `## Intuition`
+    // subsections (`## Always` / `## Except when` / `## Edge cases`)
+    // below.
     let skill_md = format!(
-        "---\nname: {name}\ndescription: {desc}\n---\n\n# {name}\n\n## How to do it\n\n(write the steps here)\n\n## Intuition\n\n(write the rules of thumb here)\n\n## Definition of done\n\n(write the success criteria here)\n",
+        "---\nname: {name}\ndescription: {desc}\n---\n\n# {name}\n\n## How to do it\n\n\
+         (write the step-by-step procedure here — concrete, no jargon)\n\n\
+         ## Intuition\n\n\
+         The judgment calls, edge cases, and exceptions that make this skill non-obvious.\n\n\
+         ### Always\n\n- Rules that hold on every run.\n\n\
+         ### Except when\n\n- Carve-outs from the Always rules.\n\n\
+         ### Edge cases\n\n- Weird inputs, conflicting signals, things you'd only know from production.\n\n\
+         ## Definition of done\n\n(write the success criteria here)\n",
         name = args.name,
         desc = description,
     );
@@ -454,12 +473,10 @@ async fn github_create(
         author = owner,
         desc = description,
     );
-    let intuition = "# Scenarios\n\n- When X happens, do Y.\n- Edge case: ...\n";
     let examples_readme = "Drop input/output pairs here as `01-input.md` / `01-output.md`, etc.\n";
 
     std::fs::write(skill_dir.join("SKILL.md"), skill_md).map_err(CliError::from)?;
     std::fs::write(skill_dir.join("meta.knack.yaml"), meta_yaml).map_err(CliError::from)?;
-    std::fs::write(skill_dir.join("intuition.md"), intuition).map_err(CliError::from)?;
     std::fs::write(skill_dir.join("examples/README.md"), examples_readme)
         .map_err(CliError::from)?;
 

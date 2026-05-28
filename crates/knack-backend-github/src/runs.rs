@@ -41,12 +41,16 @@
 //! files (newest first). A `marked` event is considered authoritative;
 //! a lone `started` reports `status = "started"`.
 //!
-//! **Push policy.** Events are NOT auto-committed or auto-pushed. They
-//! sit locally in the git working tree as untracked or modified files.
-//! The user (or `knack publish <skill>`) is responsible for committing
-//! the `runs/` directory when they want it to land on the remote. This
-//! keeps `knack run` and `knack mark` fast (no network) and avoids a
-//! noisy commit per call.
+//! **Push policy.** Every `start_run` and `mark_run` auto-commits the
+//! affected JSONL file and pushes to `origin/main`. The commit message is
+//! `telemetry: <event> <skill> <run_id>`. Only the specific day's JSONL
+//! file is staged, so unrelated working-tree changes are NOT swept into
+//! the telemetry commit.
+//!
+//! Failures are best-effort: if the push fails (offline, branch diverged,
+//! whatever), the local JSONL append still succeeds and the function
+//! returns Ok with a stderr warning. The next successful `run`/`mark` or
+//! `publish` will pick up the queued commit(s) and push them along.
 //!
 //! **Tolerance.** The reader skips lines it can't parse (malformed,
 //! truncated, or a legacy [`knack_types::RunLog`] line from an older
@@ -61,6 +65,7 @@ use serde::{Deserialize, Serialize};
 use std::fs::{create_dir_all, OpenOptions};
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
+use std::process::Command;
 use uuid::Uuid;
 
 const LOOKBACK_DAYS: i64 = 30;
@@ -89,7 +94,7 @@ pub fn append_run(repo: &Path, log: &RunLog) -> Result<()> {
         at: log.started_at,
     };
     let line = serde_json::to_string(&event).context("serialize run event")?;
-    append_to_day_file(repo, &log.started_at, &line)
+    append_to_day_file(repo, &log.started_at, &line).map(|_| ())
 }
 
 /// One JSONL record. The `event` field discriminates between `started` and
@@ -157,7 +162,8 @@ pub fn start_run(
         at: now,
     };
     let line = serde_json::to_string(&event).context("serialize started event")?;
-    append_to_day_file(repo, &now, &line)?;
+    let day_path = append_to_day_file(repo, &now, &line)?;
+    commit_and_push_event(repo, &day_path, slug, "started", &run_id.to_string());
     Ok(run_id)
 }
 
@@ -191,7 +197,14 @@ pub fn mark_run(
         at: now,
     };
     let line = serde_json::to_string(&event).context("serialize marked event")?;
-    append_to_day_file(repo, &now, &line)?;
+    let day_path = append_to_day_file(repo, &now, &line)?;
+    commit_and_push_event(
+        repo,
+        &day_path,
+        existing.skill.as_deref().unwrap_or("unknown"),
+        &format!("marked-{status}"),
+        run_id,
+    );
 
     let duration_ms = existing
         .started_at
@@ -345,7 +358,9 @@ fn day_file(repo: &Path, year: i32, month: u32, day: u32) -> PathBuf {
         .join(format!("{:04}-{:02}-{:02}.jsonl", year, month, day))
 }
 
-fn append_to_day_file(repo: &Path, at: &DateTime<Utc>, line: &str) -> Result<()> {
+/// Append `line` to the JSONL file for `at`'s date. Returns the path it
+/// wrote to so the caller can hand it to [`commit_and_push_event`].
+fn append_to_day_file(repo: &Path, at: &DateTime<Utc>, line: &str) -> Result<PathBuf> {
     let date = at.date_naive();
     let month_dir = repo
         .join("runs")
@@ -358,5 +373,94 @@ fn append_to_day_file(repo: &Path, at: &DateTime<Utc>, line: &str) -> Result<()>
         .open(&file)
         .with_context(|| format!("open {}", file.display()))?;
     writeln!(handle, "{}", line).context("write run event")?;
-    Ok(())
+    Ok(file)
+}
+
+/// Stage just the affected JSONL file, commit it with a telemetry message,
+/// push to origin/main. Best-effort: prints a warning to stderr on failure
+/// and returns; never errors out the caller's command. The local append is
+/// already done, so the caller's snapshot is still correct.
+fn commit_and_push_event(repo: &Path, jsonl_path: &Path, skill: &str, event: &str, run_id: &str) {
+    let rel = match jsonl_path.strip_prefix(repo) {
+        Ok(r) => r.to_string_lossy().replace('\\', "/"),
+        Err(_) => {
+            eprintln!(
+                "knack: telemetry recorded locally but couldn't compute repo-relative path for {}",
+                jsonl_path.display()
+            );
+            return;
+        }
+    };
+
+    // git add <rel>: only the day's JSONL. Don't sweep in unrelated edits.
+    match Command::new("git")
+        .arg("-C")
+        .arg(repo)
+        .args(["add", &rel])
+        .output()
+    {
+        Ok(o) if o.status.success() => {}
+        Ok(o) => {
+            eprintln!(
+                "knack: telemetry recorded locally but `git add {}` failed: {}",
+                rel,
+                String::from_utf8_lossy(&o.stderr).trim()
+            );
+            return;
+        }
+        Err(e) => {
+            eprintln!("knack: telemetry recorded locally but couldn't invoke `git add`: {e}");
+            return;
+        }
+    }
+
+    let msg = format!("telemetry: {event} {skill} {run_id}");
+    match Command::new("git")
+        .arg("-C")
+        .arg(repo)
+        .args(["commit", "-m", &msg])
+        .output()
+    {
+        Ok(o) if o.status.success() => {}
+        Ok(o) => {
+            let stderr = String::from_utf8_lossy(&o.stderr);
+            let stdout = String::from_utf8_lossy(&o.stdout);
+            let combined = format!("{stdout}{stderr}");
+            // No-op when the JSONL file is already at this content (rare
+            // race, idempotent retry, etc.). Not a real failure.
+            if combined.contains("nothing to commit") || combined.contains("nothing added") {
+                return;
+            }
+            eprintln!(
+                "knack: telemetry recorded locally but `git commit` failed: {}",
+                stderr.trim()
+            );
+            return;
+        }
+        Err(e) => {
+            eprintln!("knack: telemetry recorded locally but couldn't invoke `git commit`: {e}");
+            return;
+        }
+    }
+
+    // Push via system git so we inherit the user's gh credential helper.
+    match Command::new("git")
+        .arg("-C")
+        .arg(repo)
+        .args(["push", "origin", "main"])
+        .output()
+    {
+        Ok(o) if o.status.success() => {}
+        Ok(o) => {
+            let stderr = String::from_utf8_lossy(&o.stderr);
+            eprintln!(
+                "knack: telemetry committed locally but `git push origin main` failed: {}\n      run `git -C {} push origin main` once you're back online (or rebase if there's a divergence).",
+                stderr.trim(),
+                repo.display(),
+            );
+        }
+        Err(e) => {
+            eprintln!("knack: telemetry committed locally but couldn't invoke `git push`: {e}");
+        }
+    }
 }

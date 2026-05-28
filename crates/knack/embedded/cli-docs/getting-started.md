@@ -53,7 +53,8 @@ scripts and agents.
 ## First skill in 60 seconds
 
     knack create my-skill --name "My Skill"
-    # ... your agent runs the interview, fills in SKILL.md + intuition.md ...
+    # ... your agent runs the interview, fills in SKILL.md (including its
+    #     ## Intuition section: ### Always / ### Except when / ### Edge cases) ...
     knack validate my-skill
     knack publish my-skill
     knack run my-skill --input ./example.txt --input ./other.txt

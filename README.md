@@ -4,20 +4,21 @@
 
 A CLI for authoring, validating, versioning, running, and observing agent skills.
 
-Knack turns the workflows you do over and over into Anthropic Skills:
+Knack turns the workflows you do over and over into skills:
 structured folders of instructions, examples, tests, and metadata that any
 agent (Claude, Cursor, Codex, Cowork) can load. The artifact is real and
-inspectable. Every version is immutable. Every run is logged. When a skill
+inspectable, and immutable. Every skill run is logged. When a skill
 misses an edge case, you flag it, the skill gets a new rule, and the next
 run is sharper than the last.
 
-## What you ship
+## Anatomy of a Knack Skill
 
 ```
 skills/email-triage/
-├── SKILL.md            # the playbook the agent loads
+├── SKILL.md            # the playbook the agent loads — includes a `## Intuition`
+│                       # section with `### Always` / `### Except when` /
+│                       # `### Edge cases` subsections that hold every rule
 ├── meta.knack.yaml     # id, name, slug, author, version, description
-├── intuition.md        # the edge cases and judgment calls
 ├── examples/           # input/output pairs from real past work
 ├── scripts/            # optional helper scripts
 ├── assets/             # optional static files
@@ -25,28 +26,26 @@ skills/email-triage/
 └── tests/              # optional assertions that run pre-publish
 ```
 
-This is the open [Anthropic Skills](https://github.com/anthropics/skills)
-format. Portable across agents. Plain text. Diffable.
+This is compatible with the open [Anthropic Skills](https://github.com/anthropics/skills)
+format, so it's portable across agent providers.
 
 ## Install
 
 ```bash
-curl -fsSL https://knack.ai/install | sh
+curl -fsSL https://getknack.ai/install | sh
 ```
 
 Windows (PowerShell):
 
 ```powershell
-irm https://knack.ai/install.ps1 | iex
+irm https://getknack.ai/install.ps1 | iex
 ```
-
-Or in any Claude Code, Cursor, or Codex session, just say "install knack."
 
 ## Two modes, one CLI
 
 **Self-host (GitHub).** Skills live in a private GitHub repo under your
 account. No third-party account, no telemetry leaves your machine, no
-caps. Publishing is a git commit, a per-skill tag, and a push.
+caps, no server. Publishing is a git commit, a per-skill tag, and a push.
 
 ```bash
 knack init --self-host --github-repo <you>/<your-skills-repo>
@@ -86,22 +85,6 @@ The full lifecycle, with no cloud round-trip:
 | `knack run <slug> --input ... --input ...` | Registers a run, writes a `started` event to local JSONL with all inputs |
 | `knack mark <run-id> succeeded --output ... --output ... --note ...` | Closes the loop with outputs, note, and a computed `duration_ms` |
 
-## What lives only in cloud mode
-
-Be honest about the line. These either require knack.ai's server or only
-make sense once multiple users are involved:
-
-- `knack feedback` — pings the skill author with a bug report
-- `knack team` — team membership, roles, invitations
-- `knack fork` — server-side copy of someone else's marketplace skill
-- `knack rate` — 5-star rating on a public marketplace skill
-- `knack username` — claim a marketplace handle for public publishing
-- Cross-repo `knack search` — only your local clone is searched in self-host mode
-- Server-side run rollups and per-skill stats dashboards
-
-Calling these in self-host mode prints a `REQUIRES_CLOUD` message and
-exits cleanly.
-
 ## Run telemetry schema
 
 Every `knack run` and `knack mark` appends one line to
@@ -140,15 +123,19 @@ modes; in cloud mode it also lands server-side for the rollups.
 (computed from the two events' timestamps). Fields are documented in
 [`crates/knack-backend-github/src/runs.rs`](crates/knack-backend-github/src/runs.rs).
 
-**Push policy.** Run events are NOT auto-committed or auto-pushed. They
-sit locally in the working tree. Commit and push the `runs/` directory
-yourself when you want them on the remote, or let the next
-`knack publish <skill>` ride along (it commits the whole working tree).
+**Push policy.** Every `knack run` and `knack mark` auto-commits the
+affected JSONL file and pushes to `origin/main`. The commit message is
+`telemetry: <event> <skill> <run_id>`. Only the day's JSONL is staged, so
+unrelated working-tree changes are NOT swept into the telemetry commit.
+If the push fails (offline, branch diverged), the local append still
+succeeds and the CLI prints a stderr warning telling you how to recover;
+the next successful `run` / `mark` / `publish` carries the queued commits.
 
 ## The iteration loop
 
 1. Author. `knack create my-skill` scaffolds. Your agent runs the 6-phase
-   interview and fills in `SKILL.md` + `intuition.md` + `examples/`.
+   interview, filling in `SKILL.md` (procedure plus the `## Intuition`
+   subsections) and `examples/`.
 2. Validate. `knack validate my-skill` catches schema mistakes locally
    before you burn a version number.
 3. Publish. `knack publish my-skill` bumps the version, commits, tags,
@@ -159,8 +146,10 @@ yourself when you want them on the remote, or let the next
 5. Mark. `knack mark <run-id> succeeded --output ...` (or
    `failed --reason "..."`). The note text feeds back into the next
    interview pass.
-6. Bump. When a miss matters, edit `intuition.md`, then `knack publish`
-   again. Version goes from 0.1.1 to 0.1.2. The git log is the history.
+6. Bump. When a miss matters, edit the relevant subsection of
+   `SKILL.md`'s `## Intuition` block (add an `### Except when` carve-out
+   or an `### Edge cases` bullet), then `knack publish` again. Version
+   goes from 0.1.1 to 0.1.2. The git log is the history.
 
 ## For agents loading this README
 
@@ -172,10 +161,14 @@ Operating surface, when you're driving the CLI on a user's behalf:
   else: `mode: github` skips cloud auth; `mode: cloud` requires
   `knack auth login`.
 - Skill folders are at `<workspace>/skills/<slug>/`. Required:
-  `SKILL.md` (with frontmatter `name`, `description`) and `meta.knack.yaml`
-  (with `id`, `name`, `slug`, `author`, `version`). Optional:
-  `intuition.md`, `examples/`, `scripts/`, `assets/`, `references/`,
-  `tests/`.
+  `SKILL.md` (with frontmatter `name`, `description`; rules live inside
+  under `## Intuition` with `### Always` / `### Except when` /
+  `### Edge cases` subsections) and `meta.knack.yaml` (with `id`,
+  `name`, `slug`, `author`, `version`). Optional: `examples/`,
+  `scripts/`, `assets/`, `references/`, `tests/`. (Skills pulled from
+  older cloud versions may also ship a sidecar `intuition.md`; the
+  pull/publish path tolerates it for back-compat but new authoring
+  does not produce one.)
 - The 6-phase interview skill is embedded in the binary. Start it with
   `knack interview start`. The CLI writes the skill into
   `<cwd>/.claude/skills/knack-interview/` and returns a session id you pass

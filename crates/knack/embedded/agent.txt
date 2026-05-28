@@ -818,9 +818,12 @@ field in SKILL.md frontmatter). Then:
       --scaffold .knack/drafts/<slug>
 
 ALWAYS pass `--scaffold`. It writes a complete starter folder (SKILL.md
-with frontmatter, meta.knack.yaml with name/slug/author/id auto-filled,
-intuition.md stub, examples/). Authoring meta.knack.yaml by hand is the
-wrong move — you end up pasting UUIDs the server already knows. Then:
+with frontmatter and a `## Intuition` section pre-stubbed with `### Always`
+/ `### Except when` / `### Edge cases` subsections, meta.knack.yaml with
+name/slug/author/id auto-filled, examples/). Rules captured during the
+interview go INTO SKILL.md's Intuition section, not a sidecar file.
+Authoring meta.knack.yaml by hand is the wrong move — you end up pasting
+UUIDs the server already knows. Then:
 
   knack validate .knack/drafts/<slug>            # local pre-flight, no network
   knack publish <slug> --from .knack/drafts/<slug> --dry-run    # see manifest
@@ -1158,8 +1161,10 @@ state. The `current_version_id` on the Skill points at whatever is
   knack publish <slug> --as-version 0.2.0     # bump from 0.1.0
   knack pull <slug>@0.1.0                      # pull a historical version
   knack run <slug>@0.1.0                       # pin a Run to a specific version
-  knack diff <slug>@0.1.0 <slug>@0.2.0         # unified diff of SKILL.md,
-                                                # intuition.md, meta.knack.yaml
+  knack diff <slug>@0.1.0 <slug>@0.2.0         # unified diff of SKILL.md and
+                                                # meta.knack.yaml (legacy
+                                                # intuition.md sidecar also
+                                                # compared if present)
 
 `knack diff` only compares two versions of the same slug; different
 slugs are rejected. Output is ANSI line-diff in human mode, structured

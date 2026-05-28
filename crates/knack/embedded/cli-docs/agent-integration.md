@@ -18,9 +18,12 @@ The canonical pattern for an agent in a tool-use loop:
 
     1.  knack create <slug> --name "X" --scaffold ./out
         # API-registers the slug AND writes a complete starter folder
-        # (SKILL.md frontmatter + meta.knack.yaml with all four required
-        # fields auto-filled + intuition.md stub + examples/)
-    2.  edit SKILL.md to add the real procedure / intuition
+        # (SKILL.md with frontmatter AND a `## Intuition` section pre-stubbed
+        # with `### Always` / `### Except when` / `### Edge cases`, plus
+        # meta.knack.yaml with all four required fields auto-filled,
+        # plus examples/)
+    2.  edit SKILL.md to add the real procedure and intuition (rules go
+        inside the existing `## Intuition` subsections, not a sidecar file)
     3.  knack validate ./out                 # local pre-flight, no network
     4.  knack publish <slug> --from ./out --dry-run    # see what would ship
     5.  knack publish <slug> --from ./out              # ship it

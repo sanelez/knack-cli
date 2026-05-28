@@ -2,12 +2,14 @@
 //!
 //! V2a default: if the SkillVersion has a `packed_s3_key`, download the
 //! tarball via the bundle endpoint and unpack the full Anthropic Agent
-//! Skills folder (SKILL.md + meta.knack.yaml + intuition.md + scripts/ +
+//! Skills folder (SKILL.md with `## Intuition` section + meta.knack.yaml + optional legacy intuition.md sidecar + scripts/ +
 //! assets/ + references/ + examples/ + tests/) into the target directory.
 //!
-//! Legacy fallback: pre-V2a versions store only three text columns and have
-//! no bundle. We write just `SKILL.md`, `intuition.md`, `meta.knack.yaml`
-//! into the target — matching the original layout.
+//! Legacy fallback: pre-V2a versions store only the three text columns and
+//! have no bundle. We write `SKILL.md` and `meta.knack.yaml` into the
+//! target; the legacy `intuition.md` sidecar is written only if the source
+//! row has non-empty content (newer skills keep their rules inside
+//! SKILL.md under `## Intuition`).
 //!
 //! Idempotent on the legacy path: re-pulling overwrites only when content
 //! actually changed.
@@ -120,12 +122,17 @@ pub async fn run(args: PullArgs, client: ApiClient, mode: OutputMode) -> CliResu
             .collect();
         mode_label = "bundle";
     } else {
+        // intuition.md is back-compat only — write it only if the source
+        // row actually has content. New skills keep intuition inside
+        // SKILL.md under `## Intuition`.
         let mut acc = Vec::new();
         acc.extend(write_if_changed(&dir.join("SKILL.md"), &version.skill_md)?);
-        acc.extend(write_if_changed(
-            &dir.join("intuition.md"),
-            &version.intuition_md,
-        )?);
+        if !version.intuition_md.trim().is_empty() {
+            acc.extend(write_if_changed(
+                &dir.join("intuition.md"),
+                &version.intuition_md,
+            )?);
+        }
         acc.extend(write_if_changed(
             &dir.join("meta.knack.yaml"),
             &version.meta_yaml,

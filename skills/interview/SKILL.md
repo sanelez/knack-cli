@@ -23,7 +23,10 @@ result to either GitHub or Knack Cloud depending on the user's configuration.
 2. **Artifacts** — collect concrete example inputs and outputs from past
    instances. Load `artifacts.md`.
 3. **Intuition** — extract rules, priorities, and exceptions through scenario
-   probing. Load `intuition.md`.
+   probing. Load `intuition.md` for the phase rules. The captured rules are
+   appended directly into the draft `SKILL.md`'s `## Intuition` section
+   (under `### Always` / `### Except when` / `### Edge cases`). There is no
+   separate `intuition.md` output file.
 4. **Compile** — generate the first draft SKILL.md from what you've learned.
    No separate prompt file: synthesize from the captured state.
 5. **Refine** — read the draft back to the user, iterate on critiques. Load
@@ -70,10 +73,16 @@ not ask the user anything — you do.
 
 When Refine is done and the user is satisfied, the CLI writes:
 
-- `skills/<slug>/SKILL.md`
+- `skills/<slug>/SKILL.md` — including the `## Intuition` section with
+  every rule captured during the Intuition phase.
 - `skills/<slug>/meta.knack.yaml`
-- `skills/<slug>/intuition.md`
 - `skills/<slug>/tests/basic.yaml` (if examples were captured)
+
+There is no `skills/<slug>/intuition.md`. All rules live inside `SKILL.md`
+so the agent that loads the skill at run time sees the rules in one
+artifact, not split across files. (Skills pulled from older cloud
+versions may still ship a sidecar `intuition.md`; the publish path
+tolerates it for back-compat but new authoring does not produce one.)
 
 Then `knack publish <slug>` releases it to the user's configured backend.
 
