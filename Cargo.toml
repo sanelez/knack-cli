@@ -1,14 +1,18 @@
 [workspace]
 resolver = "2"
-members = ["knack"]
+members = [
+    "crates/knack",
+    "crates/knack-types",
+    "crates/knack-backend-github",
+]
 
 [workspace.package]
-version = "0.5.0"
+version = "0.7.2"
 edition = "2021"
 rust-version = "1.80"
 authors = ["Knack <hi@getknack.ai>"]
 license = "MIT"
-repository = "https://github.com/jordan-gibbs/knack"
+repository = "https://github.com/jordan-gibbs/knack-cli"
 
 [workspace.dependencies]
 clap = { version = "4.5", features = ["derive", "env"] }
@@ -38,3 +42,8 @@ tar = "0.4"
 flate2 = "1"
 walkdir = "2"
 wiremock = "0.6"
+async-trait = "0.1"
+include_dir = "0.7"
+url = "2"
+uuid = { version = "1", features = ["v4", "serde"] }
+git2 = { version = "0.19", default-features = false, features = ["vendored-libgit2"] }

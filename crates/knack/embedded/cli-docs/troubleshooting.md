@@ -1,0 +1,90 @@
+## Troubleshooting
+
+### `knack: command not found`
+
+The installer adds `knack` to your PATH but you may need a fresh shell:
+
+    macOS / Linux:  source ~/.zshrc  (or restart terminal)
+    Windows:        restart PowerShell
+
+If still missing:
+
+    which knack                      # macOS / Linux
+    Get-Command knack                # Windows
+
+### Keyring errors at login
+
+- macOS: open Keychain Access; if locked, unlock the login keychain
+- Linux: install `gnome-keyring` or `kwallet`; or set `KNACK_AUTH_TOKEN` env var
+- Windows: should Just Work; if not, run as your normal user (not Administrator)
+
+### Behind a corporate proxy
+
+Set standard env vars:
+
+    export HTTPS_PROXY=http://proxy.corp:3128
+    export HTTP_PROXY=http://proxy.corp:3128
+
+### `AUTH_REQUIRED` despite being logged in (cloud mode)
+
+Token expired. Refresh:
+
+    knack auth login
+
+### `AUTH_REQUIRED` in self-host mode
+
+That shouldn't happen any more in v0.7.0+. If it does, you might have an
+old config file. Check:
+
+    cat ~/.knack/config.yaml          # macOS / Linux
+    type %USERPROFILE%\.knack\config.yaml  # Windows
+
+It should show `mode: github`. If it says `mode: cloud` and you wanted
+github, re-run init:
+
+    knack init --self-host --github-repo <you>/<repo> --visibility private
+
+### `knack init` hangs
+
+You're in a non-TTY shell (an agent's shell tool, CI, a pipe). The
+interactive prompt has nowhere to read from. Pass flags explicitly:
+
+    knack init --self-host --github-repo <you>/<repo> --visibility private
+    knack init --cloud
+
+v0.7.1 and newer error out with `NEEDS_FLAGS` immediately instead of
+hanging.
+
+### `gh` not authenticated for self-host
+
+Self-host mode uses your existing `gh` credential helper. If
+`gh auth status` shows you logged out, fix that first:
+
+    gh auth login
+
+Then re-run whatever knack command failed.
+
+### `knack publish` complains about uncommitted changes
+
+In self-host mode, publish refuses to commit if you have edits OUTSIDE
+the skill folder being published. Stash or commit them first:
+
+    git stash
+    knack publish my-skill
+    git stash pop
+
+### `knack pull @owner/slug` returns 404
+
+The external pull uses the GitHub Contents API and assumes the repo is
+named `knack-skills` by convention. If the owner uses a different repo
+name, pass it explicitly:
+
+    knack pull @owner/their-repo-name:slug
+
+For private repos, your `gh` token needs read access.
+
+### Bug reports
+
+    knack debug              # dumps env, config, last 10 commands (redacted)
+
+Send the output to support — never includes your file contents.

@@ -2,20 +2,19 @@
 # knack CLI installer for macOS and Linux.
 #
 # Usage:
-#   curl -fsSL https://getknack.ai/install | sh
-#   curl -fsSL https://getknack.ai/install | sh -s -- --version 0.2.0
-#   curl -fsSL https://getknack.ai/install | sh -s -- --bin-dir /custom/path
+#   curl -fsSL https://knack.ai/install | sh
+#   curl -fsSL https://knack.ai/install | sh -s -- --version 0.5.0
+#   curl -fsSL https://knack.ai/install | sh -s -- --bin-dir /custom/path
 #
-# Detects OS+arch, downloads the matching binary from R2 (cli.getknack.ai
-# by default, overridable via KNACK_R2_BASE), extracts it into ~/.local/bin
-# (or $KNACK_BIN_DIR), and reminds you to add that directory to PATH if
-# it's not already there. Idempotent: re-running upgrades in place.
+# Detects OS+arch, downloads the matching binary from GitHub Releases,
+# extracts it into ~/.local/bin (or $KNACK_BIN_DIR), and reminds you to
+# add that directory to PATH if it's not already there. Idempotent:
+# re-running upgrades in place.
 
 set -eu
 
-# R2 base URL. Defaults to the cli.getknack.ai custom domain. Override via
-# KNACK_R2_BASE to use the raw r2.dev URL or a different host.
-R2_BASE="${KNACK_R2_BASE:-https://cli.getknack.ai}"
+# GitHub repo for releases. Override to point at a fork or staging repo.
+GH_REPO="${KNACK_GH_REPO:-jordan-gibbs/knack-cli}"
 VERSION="${KNACK_VERSION:-latest}"
 BIN_DIR="${KNACK_BIN_DIR:-$HOME/.local/bin}"
 TMPDIR_KEEP=""
@@ -33,6 +32,11 @@ Options:
   --version <ver>   install a specific version (default: latest)
   --bin-dir <dir>   install into <dir> (default: \$HOME/.local/bin)
   --keep-tmp        leave the temp download dir behind for debugging
+
+Environment:
+  KNACK_GH_REPO     GitHub repo for releases (default: $GH_REPO)
+  KNACK_VERSION     version to install
+  KNACK_BIN_DIR     where to drop the binary
 EOF
             exit 0
             ;;
@@ -40,7 +44,6 @@ EOF
     esac
 done
 
-# Need: curl, tar (or unzip), uname, mktemp.
 need() {
     if ! command -v "$1" >/dev/null 2>&1; then
         echo "knack-install: need '$1' on PATH" >&2
@@ -60,7 +63,7 @@ case "$os" in
     Linux)  os_part="unknown-linux-musl" ;;
     *)
         echo "knack-install: unsupported OS '$os'" >&2
-        echo "  → use the PowerShell installer on Windows: https://getknack.ai/install.ps1" >&2
+        echo "  → use the PowerShell installer on Windows: https://knack.ai/install.ps1" >&2
         exit 1
         ;;
 esac
@@ -75,24 +78,28 @@ esac
 target="${arch_part}-${os_part}"
 
 # We don't ship a native arm64 macOS binary — M-series Macs run the
-# x86_64 build via Rosetta. Save 10×-multiplier macOS-runner minutes on
-# the release matrix; re-add native arm64 if startup latency matters.
+# x86_64 build via Rosetta. Save 10× macOS runner minutes on the release
+# matrix; re-add native arm64 if startup latency matters.
 if [ "$target" = "aarch64-apple-darwin" ]; then
     target="x86_64-apple-darwin"
 fi
 
-# Resolve version. R2 holds a small text file at /cli/latest/version.txt
-# (e.g. "0.1.0\n") that points at the current version.
+# Resolve version via GitHub's latest-release API. The response is JSON;
+# pull out tag_name without needing jq.
 if [ "$VERSION" = "latest" ]; then
-    VERSION="$(curl -fsSL "${R2_BASE}/cli/latest/version.txt" | head -n1 | tr -d '\r\n ')"
-    if [ -z "$VERSION" ]; then
-        echo "knack-install: couldn't resolve latest version from ${R2_BASE}/cli/latest/version.txt" >&2
+    tag="$(curl -fsSL "https://api.github.com/repos/${GH_REPO}/releases/latest" \
+        | grep -E '"tag_name":' \
+        | head -n1 \
+        | sed -E 's/.*"tag_name": *"([^"]+)".*/\1/')"
+    if [ -z "$tag" ]; then
+        echo "knack-install: couldn't resolve latest release from ${GH_REPO}" >&2
         exit 1
     fi
+    VERSION="${tag#v}"
 fi
 
 archive="knack-${target}.tar.gz"
-url="${R2_BASE}/cli/v${VERSION}/${archive}"
+url="https://github.com/${GH_REPO}/releases/download/v${VERSION}/${archive}"
 
 echo "→ knack v${VERSION} for ${target}"
 echo "→ ${url}"
@@ -103,7 +110,7 @@ trap 'if [ -z "$TMPDIR_KEEP" ]; then rm -rf "$tmp"; fi' EXIT
 curl -fsSL "$url" -o "$tmp/$archive"
 tar -xzf "$tmp/$archive" -C "$tmp"
 
-# The archive layout from taiki-e/upload-rust-binary-action is:
+# Archive layout from taiki-e/upload-rust-binary-action:
 #   knack-<target>/knack[.exe]
 src="$(find "$tmp" -name knack -type f | head -n1)"
 if [ -z "$src" ]; then
@@ -132,9 +139,8 @@ esac
 "$BIN_DIR/knack" --version || true
 
 # Register knack with the AI agent the user is running in (Claude Code,
-# Codex, Cursor, ...). Best-effort: if the detector finds nothing, it writes
-# the generic AGENTS.md fallback. Non-fatal — agent integration is a
-# courtesy, not a requirement for the CLI to work.
+# Codex, Cursor, ...). Best-effort: if the detector finds nothing, it
+# writes the generic AGENTS.md fallback. Non-fatal.
 if "$BIN_DIR/knack" install --auto >/dev/null 2>&1; then
     echo "[OK] registered with detected agent (re-run \`knack install\` to refresh)"
 else
@@ -142,4 +148,5 @@ else
 fi
 
 echo
-echo "To uninstall later: curl -fsSL https://cli.getknack.ai/uninstall.sh | sh"
+echo "Next: run \`knack init\` to pick self-host (GitHub) or Knack Cloud."
+echo "To uninstall later: curl -fsSL https://knack.ai/uninstall.sh | sh"
