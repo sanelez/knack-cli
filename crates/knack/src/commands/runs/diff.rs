@@ -92,7 +92,7 @@ pub async fn run(args: DiffArgs, client: ApiClient, mode: OutputMode) -> CliResu
             "success_rate": delta_opt(a.success_rate, b.success_rate),
             "p50_ms": delta_opt(a.p50_ms.map(|x| x as f64), b.p50_ms.map(|x| x as f64)),
             "p95_ms": delta_opt(a.p95_ms.map(|x| x as f64), b.p95_ms.map(|x| x as f64)),
-            "total": b.total as i64 - a.total as i64,
+            "runs_total": b.total as i64 - a.total as i64,
         })
     } else {
         json!(null)
@@ -347,9 +347,9 @@ fn bucket_json(b: &Bucket) -> serde_json::Value {
     json!({
         "version": b.version,
         "present": b.present,
-        "total": b.total,
-        "succeeded": b.succeeded,
-        "failed": b.failed,
+        "runs_total": b.total,
+        "runs_succeeded": b.succeeded,
+        "runs_failed": b.failed,
         "success_rate": b.success_rate,
         "p50_ms": b.p50_ms,
         "p95_ms": b.p95_ms,

@@ -68,10 +68,20 @@ pub enum CliError {
 }
 
 impl CliError {
-    /// Stable error code surfaced in `--json` envelopes.
-    pub fn code(&self) -> &'static str {
+    /// Stable error code surfaced in `--json` envelopes. For variants
+    /// that carry their own discriminating code (today: `User`), the
+    /// inner code wins so agents can branch on `BAD_GROUP_BY`,
+    /// `BAD_DATE`, etc. instead of the generic `USER_ERROR` umbrella.
+    /// Variants that don't carry a code return a `'static` constant.
+    pub fn code(&self) -> &str {
         match self {
-            CliError::User { .. } => "USER_ERROR",
+            CliError::User { code, .. } => {
+                if code.is_empty() {
+                    "USER_ERROR"
+                } else {
+                    code.as_str()
+                }
+            }
             CliError::AuthRequired => "AUTH_REQUIRED",
             CliError::AuthFailed(_) => "AUTH_FAILED",
             CliError::Network(_) => "NETWORK",

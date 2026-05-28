@@ -79,7 +79,7 @@ the slugs. If `stale` is high, the issue is adoption, not quality.
             "slug": "email-triage",
             "current_version": "0.1.4",
             "runs_total": 22,
-            "succeeded": 20, "failed": 2,
+            "runs_succeeded": 20, "runs_failed": 2,
             "success_rate": 0.909, "p50_ms": 165, "p95_ms": 340,
             "last_run_at": "2026-05-28T11:00:00Z",
             "regression": {

@@ -127,7 +127,7 @@ mod tests {
     #[test]
     fn split_rejects_missing_at() {
         let err = split("foo").unwrap_err();
-        assert_eq!(err.code(), "USER_ERROR");
+        assert_eq!(err.code(), "DIFF_USAGE");
     }
 
     #[test]

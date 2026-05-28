@@ -25,7 +25,12 @@ pub struct SkillOverview {
     pub slug: String,
     pub current_version: Option<String>,
     pub runs_total: u64,
+    /// Serialized as `runs_succeeded` / `runs_failed` to match the
+    /// stats bucket field naming. The bare names exist in Rust for
+    /// terse use in renderers.
+    #[serde(rename = "runs_succeeded")]
     pub succeeded: u64,
+    #[serde(rename = "runs_failed")]
     pub failed: u64,
     pub success_rate: Option<f64>,
     pub p50_ms: Option<u64>,
@@ -193,9 +198,17 @@ pub fn scan_snapshots(
 #[derive(Debug, Clone, Serialize)]
 pub struct StatsBucket {
     pub key: BTreeMap<String, Option<String>>,
+    /// Serialized as `runs_total` / `runs_succeeded` / `runs_failed` /
+    /// `runs_unmarked` to match the cloud `StatsBucketDto` shape and
+    /// the `agent.txt` envelope spec. Internal Rust callers still use
+    /// the short names for terse arithmetic.
+    #[serde(rename = "runs_total")]
     pub total: u64,
+    #[serde(rename = "runs_succeeded")]
     pub succeeded: u64,
+    #[serde(rename = "runs_failed")]
     pub failed: u64,
+    #[serde(rename = "runs_unmarked")]
     pub unmarked: u64,
     /// `succeeded / (succeeded + failed)`. `None` when there are no
     /// marked runs (avoids `0/0` and the misleading "0% success" framing
