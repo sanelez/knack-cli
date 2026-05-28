@@ -151,3 +151,307 @@ async fn mark_404_when_run_unknown() {
     .unwrap_err();
     matches!(err, CliError::NotFound(_));
 }
+
+// === Phase B/D additions: list_for_skill + get_stats =======================
+
+use wiremock::matchers::query_param;
+
+#[tokio::test]
+async fn list_for_skill_threads_filters_into_query() {
+    let (server, client, _store) = common::fixture().await;
+
+    Mock::given(method("GET"))
+        .and(path("/runs/by-skill/skill-1"))
+        .and(query_param("status", "failed"))
+        .and(query_param("limit", "10"))
+        .and(query_param("cursor", "cur-abc"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "items": [
+                run_response("run-1", "succeeded"),
+                run_response("run-2", "failed"),
+            ],
+            "next_cursor": "cur-next"
+        })))
+        .mount(&server)
+        .await;
+
+    let page = api_runs::list_for_skill(
+        &client,
+        "skill-1",
+        &api_runs::RunsListQuery {
+            status: Some("failed".into()),
+            limit: Some(10),
+            cursor: Some("cur-abc".into()),
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap();
+    assert_eq!(page.items.len(), 2);
+    assert_eq!(page.next_cursor.as_deref(), Some("cur-next"));
+}
+
+#[tokio::test]
+async fn get_stats_default_returns_flat_shape() {
+    use knack_cli::api::skills as api_skills;
+
+    let (server, client, _store) = common::fixture().await;
+
+    Mock::given(method("GET"))
+        .and(path("/skills/skill-1/stats"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "skill_id": "skill-1",
+            "runs_total": 10,
+            "runs_succeeded": 8,
+            "runs_failed": 1,
+            "runs_unmarked": 1,
+            "success_rate": 0.888,
+            "last_run_at": "2026-05-27T00:00:00Z"
+        })))
+        .mount(&server)
+        .await;
+
+    let resp = api_skills::get_stats(&client, "skill-1", &api_skills::StatsQuery::default())
+        .await
+        .unwrap();
+    match resp {
+        api_skills::SkillStatsResponse::Flat(s) => {
+            assert_eq!(s.runs_total, 10);
+            assert!((s.success_rate.unwrap() - 0.888).abs() < 1e-6);
+        }
+        api_skills::SkillStatsResponse::ByVersion(_) => panic!("expected flat shape"),
+    }
+}
+
+#[tokio::test]
+async fn get_stats_group_by_version_returns_buckets_with_p50() {
+    use knack_cli::api::skills as api_skills;
+
+    let (server, client, _store) = common::fixture().await;
+
+    Mock::given(method("GET"))
+        .and(path("/skills/skill-1/stats"))
+        .and(query_param("group_by", "version"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "skill_id": "skill-1",
+            "dimensions": ["version"],
+            "buckets": [
+                {
+                    "key": {"version": "0.1.3"},
+                    "runs_total": 4, "runs_succeeded": 2, "runs_failed": 2,
+                    "runs_unmarked": 0, "success_rate": 0.5,
+                    "p50_ms": 180, "p95_ms": 900,
+                    "last_run_at": "2026-05-27T00:00:00Z",
+                    "top_notes": [{"note": "timeout", "count": 2}]
+                },
+                {
+                    "key": {"version": "0.1.4"},
+                    "runs_total": 6, "runs_succeeded": 6, "runs_failed": 0,
+                    "runs_unmarked": 0, "success_rate": 1.0,
+                    "p50_ms": 120, "p95_ms": 300,
+                    "last_run_at": "2026-05-28T00:00:00Z",
+                    "top_notes": []
+                }
+            ]
+        })))
+        .mount(&server)
+        .await;
+
+    let resp = api_skills::get_stats(
+        &client,
+        "skill-1",
+        &api_skills::StatsQuery {
+            group_by: Some("version".into()),
+            include: vec!["p50".into(), "p95".into()],
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap();
+
+    match resp {
+        api_skills::SkillStatsResponse::ByVersion(b) => {
+            assert_eq!(b.dimensions, vec!["version".to_string()]);
+            assert_eq!(b.buckets.len(), 2);
+            let v014 = &b.buckets[1];
+            assert_eq!(
+                v014.key.get("version").unwrap().as_deref(),
+                Some("0.1.4")
+            );
+            assert_eq!(v014.runs_succeeded, 6);
+            assert_eq!(v014.p50_ms, Some(120));
+        }
+        api_skills::SkillStatsResponse::Flat(_) => panic!("expected by-version shape"),
+    }
+}
+
+#[tokio::test]
+async fn get_stats_cross_tab_version_and_agent() {
+    use knack_cli::api::skills as api_skills;
+    let (server, client, _store) = common::fixture().await;
+    Mock::given(method("GET"))
+        .and(path("/skills/skill-1/stats"))
+        .and(query_param("group_by", "version,agent"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "skill_id": "skill-1",
+            "dimensions": ["version", "agent"],
+            "buckets": [
+                {
+                    "key": {"version": "0.1.4", "agent": "cursor"},
+                    "runs_total": 3, "runs_succeeded": 1, "runs_failed": 2,
+                    "runs_unmarked": 0, "success_rate": 0.333,
+                    "p50_ms": 250, "p95_ms": 800,
+                    "last_run_at": "2026-05-28T00:00:00Z",
+                    "top_notes": [{"note": "schema mismatch", "count": 2}]
+                }
+            ]
+        })))
+        .mount(&server)
+        .await;
+
+    let resp = api_skills::get_stats(
+        &client,
+        "skill-1",
+        &api_skills::StatsQuery {
+            group_by: Some("version,agent".into()),
+            include: vec!["p50".into(), "p95".into()],
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap();
+    let by = match resp {
+        api_skills::SkillStatsResponse::ByVersion(b) => b,
+        api_skills::SkillStatsResponse::Flat(_) => panic!("expected by-version shape"),
+    };
+    assert_eq!(by.dimensions, vec!["version".to_string(), "agent".to_string()]);
+    let cursor = &by.buckets[0];
+    assert_eq!(cursor.runs_failed, 2);
+    assert_eq!(cursor.top_notes[0].note, "schema mismatch");
+}
+
+#[tokio::test]
+async fn get_trend_daily_returns_series() {
+    use knack_cli::api::skills as api_skills;
+    let (server, client, _store) = common::fixture().await;
+    Mock::given(method("GET"))
+        .and(path("/skills/skill-1/stats/trend"))
+        .and(query_param("interval", "day"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "skill_id": "skill-1",
+            "interval": "day",
+            "dimensions": [],
+            "series": [
+                {
+                    "bucket_start": "2026-05-27",
+                    "bucket_end": "2026-05-27",
+                    "buckets": [
+                        {"key": {}, "runs_total": 2, "runs_succeeded": 1, "runs_failed": 1,
+                         "runs_unmarked": 0, "success_rate": 0.5,
+                         "p50_ms": 200, "p95_ms": 1000,
+                         "last_run_at": "2026-05-27T11:00:00Z", "top_notes": []}
+                    ]
+                },
+                {
+                    "bucket_start": "2026-05-28",
+                    "bucket_end": "2026-05-28",
+                    "buckets": [
+                        {"key": {}, "runs_total": 1, "runs_succeeded": 1, "runs_failed": 0,
+                         "runs_unmarked": 0, "success_rate": 1.0,
+                         "p50_ms": 120, "p95_ms": 120,
+                         "last_run_at": "2026-05-28T10:00:00Z", "top_notes": []}
+                    ]
+                }
+            ]
+        })))
+        .mount(&server)
+        .await;
+
+    let resp = api_skills::get_trend(
+        &client,
+        "skill-1",
+        &api_skills::TrendQuery {
+            interval: "day".into(),
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap();
+    assert_eq!(resp.series.len(), 2);
+    assert_eq!(resp.series[1].buckets[0].runs_succeeded, 1);
+}
+
+#[tokio::test]
+async fn get_overview_returns_summary_with_regressions() {
+    use knack_cli::api::overview as api_overview;
+    let (server, client, _store) = common::fixture().await;
+    Mock::given(method("GET"))
+        .and(path("/runs/overview"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "skills": [
+                {
+                    "slug": "email-triage",
+                    "current_version": "0.1.4",
+                    "runs_total": 22, "succeeded": 20, "failed": 2,
+                    "success_rate": 0.909,
+                    "p50_ms": 165, "p95_ms": 340,
+                    "last_run_at": "2026-05-28T11:00:00Z",
+                    "regression": {
+                        "current_version": "0.1.4",
+                        "prior_version": "0.1.3",
+                        "delta_success_rate": -0.083,
+                        "current_success_rate": 0.909,
+                        "prior_success_rate": 0.992
+                    },
+                    "stale": false
+                },
+                {
+                    "slug": "unused",
+                    "current_version": null,
+                    "runs_total": 0, "succeeded": 0, "failed": 0,
+                    "success_rate": null,
+                    "p50_ms": null, "p95_ms": null,
+                    "last_run_at": null,
+                    "regression": null,
+                    "stale": true
+                }
+            ]
+        })))
+        .mount(&server)
+        .await;
+
+    let resp = api_overview::get_overview(&client, &api_overview::OverviewQuery::default())
+        .await
+        .unwrap();
+    assert_eq!(resp.skills.len(), 2);
+    let triage = resp.skills.iter().find(|s| s.slug == "email-triage").unwrap();
+    assert!(triage.regression.is_some());
+    let stale = resp.skills.iter().find(|s| s.slug == "unused").unwrap();
+    assert!(stale.stale);
+}
+
+#[test]
+fn skill_stats_untagged_enum_round_trips() {
+    // Belt-and-suspenders: both variants have `skill_id`, so an
+    // additive field on either could silently flip serde's chosen arm.
+    use knack_cli::api::skills as api_skills;
+    let flat = json!({
+        "skill_id": "s1",
+        "runs_total": 0,
+        "runs_succeeded": 0,
+        "runs_failed": 0,
+        "runs_unmarked": 0,
+        "success_rate": null,
+        "last_run_at": null
+    });
+    let parsed: api_skills::SkillStatsResponse = serde_json::from_value(flat).unwrap();
+    assert!(matches!(parsed, api_skills::SkillStatsResponse::Flat(_)));
+
+    let by_ver = json!({
+        "skill_id": "s1",
+        "dimensions": ["version"],
+        "buckets": []
+    });
+    let parsed: api_skills::SkillStatsResponse = serde_json::from_value(by_ver).unwrap();
+    assert!(matches!(parsed, api_skills::SkillStatsResponse::ByVersion(_)));
+}

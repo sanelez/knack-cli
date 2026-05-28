@@ -21,6 +21,7 @@ pub mod publish;
 pub mod pull;
 pub mod rate;
 pub mod run;
+pub mod runs;
 pub mod search;
 pub mod sync;
 pub mod team;
@@ -75,6 +76,10 @@ pub enum Command {
 
     /// Mark a run succeeded / failed (closes the agent loop)
     Mark(mark::MarkArgs),
+
+    /// Analyze past runs: list / show / stats / diff across versions
+    #[command(subcommand)]
+    Runs(runs::RunsCmd),
 
     /// Print embedded docs (offline)
     Docs(docs::DocsArgs),
@@ -213,6 +218,7 @@ pub async fn dispatch(cmd: Command, client: ApiClient, mode: OutputMode) -> CliR
         Command::Fork(a) => fork::run(a, client, mode).await,
         Command::Run(a) => run::run(a, client, mode).await,
         Command::Mark(a) => mark::run(a, client, mode).await,
+        Command::Runs(c) => runs::run(c, client, mode).await,
         Command::Docs(a) => docs::run(a, mode),
         Command::Introspect(a) => introspect::run(a, mode),
         Command::Completions(a) => completions::run(a, mode),

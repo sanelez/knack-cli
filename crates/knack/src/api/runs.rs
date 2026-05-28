@@ -5,7 +5,7 @@ use reqwest::Method;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::api::ApiClient;
+use crate::api::{ApiClient, Page};
 use crate::errors::CliError;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -78,5 +78,55 @@ pub async fn get(client: &ApiClient, run_id: &str) -> Result<Run, CliError> {
     let path = format!("/runs/{run_id}");
     client
         .send_json::<Run>(|c| c.request(Method::GET, &path))
+        .await
+}
+
+/// Query filters for `list_for_skill`. Mirrors the server's accepted
+/// params at `GET /runs/by-skill/{skill_id}`. All fields optional;
+/// `limit` is the only one with a default (50).
+#[derive(Debug, Clone, Default)]
+pub struct RunsListQuery {
+    pub status: Option<String>,
+    pub marked_by: Option<String>,
+    pub since: Option<DateTime<Utc>>,
+    pub until: Option<DateTime<Utc>>,
+    pub limit: Option<u32>,
+    pub cursor: Option<String>,
+}
+
+/// Paginated list of runs for a given skill. Wraps the server's
+/// `GET /runs/by-skill/{skill_id}` endpoint; pagination is cursor-based,
+/// so the caller passes the previous response's `next_cursor` back in to
+/// fetch the next page.
+pub async fn list_for_skill(
+    client: &ApiClient,
+    skill_id: &str,
+    q: &RunsListQuery,
+) -> Result<Page<Run>, CliError> {
+    let path = format!("/runs/by-skill/{skill_id}");
+    let q = q.clone();
+    client
+        .send_json::<Page<Run>>(|c| {
+            let mut rb = c.request(Method::GET, &path)?;
+            if let Some(s) = &q.status {
+                rb = rb.query(&[("status", s.as_str())]);
+            }
+            if let Some(m) = &q.marked_by {
+                rb = rb.query(&[("marked_by", m.as_str())]);
+            }
+            if let Some(s) = &q.since {
+                rb = rb.query(&[("since", s.to_rfc3339())]);
+            }
+            if let Some(u) = &q.until {
+                rb = rb.query(&[("until", u.to_rfc3339())]);
+            }
+            if let Some(l) = q.limit {
+                rb = rb.query(&[("limit", l.to_string())]);
+            }
+            if let Some(c) = &q.cursor {
+                rb = rb.query(&[("cursor", c.as_str())]);
+            }
+            Ok(rb)
+        })
         .await
 }

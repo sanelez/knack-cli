@@ -68,7 +68,11 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use uuid::Uuid;
 
-const LOOKBACK_DAYS: i64 = 30;
+/// Default window (in days) for run lookups that take a `--since` flag.
+/// `find_run` uses it as a hard cap; `aggregate::scan_snapshots` uses it
+/// as the default when the caller doesn't pass an explicit window.
+pub const DEFAULT_LOOKBACK_DAYS: i64 = 30;
+const LOOKBACK_DAYS: i64 = DEFAULT_LOOKBACK_DAYS;
 
 /// Append a structured `RunLog` (the [`Backend::record_run`] trait surface).
 ///
@@ -268,7 +272,7 @@ pub fn find_run(repo: &Path, run_id: &str) -> Result<Option<RunSnapshot>> {
 /// Parse a JSONL line into a `RunEvent`, migrating the pre-v0.7.2 single
 /// `input: "<path>"` field into `inputs: ["<path>"]` on the fly so old
 /// files keep working with the new readers.
-fn parse_event_line(line: &str) -> Option<RunEvent> {
+pub(crate) fn parse_event_line(line: &str) -> Option<RunEvent> {
     let mut value: serde_json::Value = serde_json::from_str(line).ok()?;
     if let Some(obj) = value.as_object_mut() {
         if !obj.contains_key("inputs") {
@@ -285,7 +289,7 @@ fn parse_event_line(line: &str) -> Option<RunEvent> {
     serde_json::from_value(value).ok()
 }
 
-fn finalize_duration(mut s: RunSnapshot) -> RunSnapshot {
+pub(crate) fn finalize_duration(mut s: RunSnapshot) -> RunSnapshot {
     if s.duration_ms.is_none() {
         if let (Some(start), Some(end)) = (s.started_at, s.completed_at) {
             if let Ok(ms) = (end - start).num_milliseconds().try_into() {
@@ -296,7 +300,7 @@ fn finalize_duration(mut s: RunSnapshot) -> RunSnapshot {
     s
 }
 
-fn merge_event(prior: Option<RunSnapshot>, ev: RunEvent) -> RunSnapshot {
+pub(crate) fn merge_event(prior: Option<RunSnapshot>, ev: RunEvent) -> RunSnapshot {
     let mut s = prior.unwrap_or_else(|| RunSnapshot {
         run_id: ev.run_id.clone(),
         skill: None,
@@ -352,7 +356,7 @@ fn merge_event(prior: Option<RunSnapshot>, ev: RunEvent) -> RunSnapshot {
     s
 }
 
-fn day_file(repo: &Path, year: i32, month: u32, day: u32) -> PathBuf {
+pub(crate) fn day_file(repo: &Path, year: i32, month: u32, day: u32) -> PathBuf {
     repo.join("runs")
         .join(format!("{:04}-{:02}", year, month))
         .join(format!("{:04}-{:02}-{:02}.jsonl", year, month, day))

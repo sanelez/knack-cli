@@ -1004,6 +1004,90 @@ The flow is four steps:
      computes `duration_ms` automatically from started_at to the mark
      time, so you don't pass it.
 
+  6. READ THE TELEMETRY BACK. The run log is the closed-loop signal
+     for the next iteration. Six read commands, identical shape in
+     self-host (CLI scans local JSONL) and cloud (CLI calls the API).
+     All support `--json`; that's the load-bearing surface.
+
+     === ORIENTATION: WHERE DO I START? ===
+
+       knack runs overview --json --since 30d
+         → portfolio dashboard, one row per skill the caller can read.
+         → Returns `data.skills[]` with success_rate, p50_ms,
+           last_run_at, regression (or null), stale (bool).
+         → Plus `data.summary.regressions: ["slug1", "slug2"]` so you
+           can branch immediately without scanning the array.
+         → THIS IS THE DEFAULT FIRST CALL when an agent loads with no
+           specific slug in mind. It tells you which skills need
+           attention right now without you having to know their names.
+
+     === STATS: AGGREGATE ON ONE OR MORE DIMENSIONS ===
+
+       knack runs stats <slug> --json --group-by version
+       knack runs stats <slug> --json --group-by version,agent
+         → `data.dimensions: ["version", ...]` echoes the requested grouping.
+         → `data.buckets[]` carries `key` (a map of dim → value) plus
+           runs_total / runs_succeeded / runs_failed / success_rate /
+           p50_ms / p95_ms / last_run_at / top_notes.
+         → Cross-tab (`version,agent`) answers "did the patch help
+           every agent or only claude-code?" — group_by=version alone
+           would average over the agent dimension and hide the answer.
+
+     === TREND: TIME SERIES ===
+
+       knack runs trend <slug> --interval day --json --since 30d
+       knack runs trend <slug> --interval week --group-by version --json
+         → `data.series[]`, one entry per period in the window. Every
+           period emits a point — empty ones carry buckets:[] — so the
+           series is gap-free and ready to plot.
+         → Each entry: bucket_start, bucket_end, buckets[] (same shape
+           as stats; one item per cross-tab cohort within the slice,
+           or one bucket with empty key when --group-by isn't passed).
+         → Branch on monotonic trends: e.g. last 3 daily success_rate
+           values strictly increasing = "publish landed clean."
+
+     === SCOPED READS ===
+
+       knack runs list <slug> --status failed --since 7d \
+           --note-contains "TEXT" --version <semver> --agent <runtime> --json
+         → paged run rows; filter by status, version, agent, date, note text.
+         → Cloud supports --cursor; the response includes next_cursor.
+
+       knack runs show <run-id> --json
+         → single-run snapshot: status, duration_ms, inputs, outputs, note.
+
+       knack runs diff <slug> <ver-a> <ver-b> --json
+         → side-by-side cohort comparison; `data.delta` is null when
+           either side has zero runs in the window (so deltas never lie
+           about empty cohorts).
+
+     === LOOP RECIPES (BRANCH ON --json DIRECTLY) ===
+
+       After a publish, decide if it regressed:
+         resp = knack runs diff <slug> <prev> <new> --json
+         if resp.data.delta is not null and
+            resp.data.delta.success_rate < 0:
+             # publish regressed; read top_notes on resp.data.b and
+             # author the next patch
+         else:
+             # done
+
+       After loading with no slug, find work:
+         resp = knack runs overview --json --since 30d
+         for slug in resp.data.summary.regressions:
+             # drill: knack runs stats $slug --json --group-by version
+             # decide if the regression is structural or noise
+
+       Author wants to iterate:
+         knack runs list <slug> --status failed --since 14d --json
+         → mine notes for a pattern; that pattern becomes the next
+           `## Intuition / ### Except when` rule in SKILL.md.
+
+     Date flags accept `YYYY-MM-DD` or `<N>d` (e.g. `7d` = seven days
+     back). Default window: 30 days back to today. The 30-day default
+     also caps the `find_run` lookback in self-host mode; older runs
+     are still scannable via explicit `--since`.
+
 
 === PART SEVEN (OPTIONAL): SHARING + DISCOVERY ===
 

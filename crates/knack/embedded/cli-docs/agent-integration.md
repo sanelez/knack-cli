@@ -14,6 +14,142 @@ The canonical pattern for an agent in a tool-use loop:
 
 `mark` closes the loop — the data flywheel grows from these marks.
 
+## Observability loop
+
+The read side is the part agents drive most. Six commands cover the
+"what happened, what's broken, what changed" surface — all return JSON
+in the same envelope. Branch on JSON; the human renderers are a
+fallback.
+
+### Starting cold (no slug in hand)
+
+    knack runs overview --json --since 30d
+    → data.summary.regressions: [slug, ...]   ← immediate work list
+    → data.summary.skills_stale: <count>      ← never-used skills
+    → data.skills[]: per-skill row with current_version, success_rate,
+      regression (or null), stale (bool), last_run_at
+
+Default first call. If `regressions` is non-empty, drill into one of
+the slugs. If `stale` is high, the issue is adoption, not quality.
+
+### Diagnosing one skill
+
+    # cross-tab: did the patch help every agent equally?
+    knack runs stats <slug> --json --group-by version,agent
+    → data.dimensions: ["version", "agent"]
+    → data.buckets[]: each {key: {version, agent}, runs_total,
+      runs_succeeded, runs_failed, success_rate, p50_ms, p95_ms,
+      last_run_at, top_notes}
+
+    # time series: success rate trajectory
+    knack runs trend <slug> --interval day --json --since 30d
+    → data.series[]: each {bucket_start, bucket_end, buckets[]}
+      Every period in window emits a point (empty ones get buckets:[])
+      → gap-free; ready to plot a sparkline.
+
+    # filter individual runs for cause analysis
+    knack runs list <slug> --status failed --since 14d \
+        --note-contains "timeout" --json
+    → data.items[]: full Run rows incl. inputs/outputs/marks; mine the
+      notes for patterns that become the next ## Intuition rule.
+
+    # single-run drill-down
+    knack runs show <run-id> --json
+    → full snapshot incl. duration_ms, started_at, completed_at, note.
+
+### Post-publish check
+
+    knack runs diff <slug> <prev-version> <new-version> --json
+    → data.delta: {success_rate, p50_ms, p95_ms, total} ← or null when
+      either cohort is empty in the window
+    Branch on delta.success_rate ≥ 0 → publish landed clean.
+
+### Trimmed envelope examples
+
+`runs overview --json`:
+
+    {
+      "$schema": "knack://cli/v1",
+      "ok": true,
+      "data": {
+        "backend": "github",
+        "window": { "since": "2026-04-28", "until": "2026-05-28" },
+        "skills": [
+          {
+            "slug": "email-triage",
+            "current_version": "0.1.4",
+            "runs_total": 22,
+            "succeeded": 20, "failed": 2,
+            "success_rate": 0.909, "p50_ms": 165, "p95_ms": 340,
+            "last_run_at": "2026-05-28T11:00:00Z",
+            "regression": {
+              "current_version": "0.1.4",
+              "prior_version": "0.1.3",
+              "delta_success_rate": -0.083,
+              "current_success_rate": 0.909,
+              "prior_success_rate": 0.992
+            },
+            "stale": false
+          }
+        ],
+        "summary": {
+          "skills_total": 7,
+          "skills_stale": 2,
+          "regressions": ["email-triage"]
+        }
+      }
+    }
+
+`runs stats --json --group-by version,agent`:
+
+    {
+      "data": {
+        "slug": "triage",
+        "dimensions": ["version", "agent"],
+        "window": { "since": "...", "until": "..." },
+        "buckets": [
+          {
+            "key": {"version": "0.1.4", "agent": "claude-code"},
+            "runs_total": 18, "runs_succeeded": 17, "runs_failed": 1,
+            "success_rate": 0.944, "p50_ms": 120, "p95_ms": 280,
+            "last_run_at": "2026-05-28T...",
+            "top_notes": []
+          },
+          {
+            "key": {"version": "0.1.4", "agent": "cursor"},
+            "runs_total": 3, "runs_succeeded": 1, "runs_failed": 2,
+            "success_rate": 0.333, ...
+            "top_notes": [{"note": "schema mismatch", "count": 2}]
+          }
+        ]
+      }
+    }
+
+`runs trend --json --interval day`:
+
+    {
+      "data": {
+        "interval": "day",
+        "dimensions": [],
+        "series": [
+          {
+            "bucket_start": "2026-05-27",
+            "bucket_end": "2026-05-27",
+            "buckets": [
+              {"key": {}, "runs_total": 2, "success_rate": 0.5, ...}
+            ]
+          },
+          {
+            "bucket_start": "2026-05-28",
+            "bucket_end": "2026-05-28",
+            "buckets": [
+              {"key": {}, "runs_total": 4, "success_rate": 1.0, ...}
+            ]
+          }
+        ]
+      }
+    }
+
 ## Authoring loop
 
     1.  knack create <slug> --name "X" --scaffold ./out

@@ -485,3 +485,168 @@ pub async fn bundle_download(
         .send_json::<BundleDownloadResponse>(|c| c.request(Method::GET, &path))
         .await
 }
+
+/// Flat stats shape returned by `GET /skills/{id}/stats` (no `group_by`).
+/// Same fields the server has emitted since 0.4.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct SkillStats {
+    pub skill_id: String,
+    pub runs_total: u64,
+    pub runs_succeeded: u64,
+    pub runs_failed: u64,
+    pub runs_unmarked: u64,
+    pub success_rate: Option<f64>,
+    pub last_run_at: Option<DateTime<Utc>>,
+}
+
+/// Stats response when `group_by=<dims>`. Cohorts come back sorted by
+/// their key tuple; the CLI presents them in the same order. `dimensions`
+/// echoes the requested grouping so generic agent code can branch on
+/// `bucket.key[dimension_name]` without prior knowledge of what was asked.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct SkillStatsByVersion {
+    pub skill_id: String,
+    pub dimensions: Vec<String>,
+    pub buckets: Vec<StatsBucketDto>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct StatsBucketDto {
+    /// Cohort coordinates: one entry per requested dimension. Values
+    /// can be null when the row didn't carry that dimension (legacy
+    /// unversioned data, unidentified agent, etc.).
+    pub key: std::collections::BTreeMap<String, Option<String>>,
+    pub runs_total: u64,
+    pub runs_succeeded: u64,
+    pub runs_failed: u64,
+    pub runs_unmarked: u64,
+    pub success_rate: Option<f64>,
+    #[serde(default)]
+    pub p50_ms: Option<u64>,
+    #[serde(default)]
+    pub p95_ms: Option<u64>,
+    /// Most recent activity timestamp in the cohort. Useful when judging
+    /// whether a 100% success rate from three months ago is still load-bearing.
+    #[serde(default)]
+    pub last_run_at: Option<DateTime<Utc>>,
+    #[serde(default)]
+    pub top_notes: Vec<NoteCountDto>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct NoteCountDto {
+    pub note: String,
+    pub count: u64,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct StatsQuery {
+    /// Comma-separated list of dimensions, e.g. `"version"`,
+    /// `"agent"`, `"version,agent"`. When unset, the response is the
+    /// legacy flat [`SkillStats`] shape. When set, the response is
+    /// [`SkillStatsByVersion`] with one bucket per key tuple.
+    pub group_by: Option<String>,
+    /// Server-side includes — e.g. `["p50", "p95"]`. Ignored when not
+    /// grouping (the flat shape doesn't carry percentiles).
+    pub include: Vec<String>,
+    pub since: Option<DateTime<Utc>>,
+    pub until: Option<DateTime<Utc>>,
+}
+
+/// Untagged enum that auto-discriminates on response shape. The server
+/// emits the by-version shape when `group_by=version` was passed; serde
+/// picks the first variant that matches the fields it sees.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(untagged)]
+pub enum SkillStatsResponse {
+    ByVersion(SkillStatsByVersion),
+    Flat(SkillStats),
+}
+
+/// Stats for one skill. Pass `StatsQuery::default()` for the legacy
+/// `success_rate / last_run_at` flat shape, or set
+/// `group_by = Some("version")` (or `"version,agent"`) to get a
+/// per-cohort rollup with `p50_ms`, `p95_ms`, and `top_notes`.
+pub async fn get_stats(
+    client: &ApiClient,
+    skill_id: &str,
+    q: &StatsQuery,
+) -> Result<SkillStatsResponse, CliError> {
+    let path = format!("/skills/{skill_id}/stats");
+    let q = q.clone();
+    client
+        .send_json::<SkillStatsResponse>(|c| {
+            let mut rb = c.request(Method::GET, &path)?;
+            if let Some(g) = &q.group_by {
+                rb = rb.query(&[("group_by", g.as_str())]);
+            }
+            for inc in &q.include {
+                rb = rb.query(&[("include", inc.as_str())]);
+            }
+            if let Some(s) = &q.since {
+                rb = rb.query(&[("since", s.to_rfc3339())]);
+            }
+            if let Some(u) = &q.until {
+                rb = rb.query(&[("until", u.to_rfc3339())]);
+            }
+            Ok(rb)
+        })
+        .await
+}
+
+/// Time-series stats for one skill. Wraps
+/// `GET /skills/{id}/stats/trend?interval=...&group_by=...`.
+#[derive(Debug, Clone, Default)]
+pub struct TrendQuery {
+    /// `"day"` or `"week"`. Required by the server.
+    pub interval: String,
+    /// Comma-separated sub-grouping dimensions, e.g. `"version"` or
+    /// `"version,agent"`. `None` = one bucket per time slice.
+    pub group_by: Option<String>,
+    pub include: Vec<String>,
+    pub since: Option<DateTime<Utc>>,
+    pub until: Option<DateTime<Utc>>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct SkillTrendResponse {
+    pub skill_id: String,
+    pub interval: String,
+    pub dimensions: Vec<String>,
+    pub series: Vec<TrendPointDto>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct TrendPointDto {
+    pub bucket_start: chrono::NaiveDate,
+    pub bucket_end: chrono::NaiveDate,
+    pub buckets: Vec<StatsBucketDto>,
+}
+
+pub async fn get_trend(
+    client: &ApiClient,
+    skill_id: &str,
+    q: &TrendQuery,
+) -> Result<SkillTrendResponse, CliError> {
+    let path = format!("/skills/{skill_id}/stats/trend");
+    let q = q.clone();
+    client
+        .send_json::<SkillTrendResponse>(|c| {
+            let mut rb = c.request(Method::GET, &path)?;
+            rb = rb.query(&[("interval", q.interval.as_str())]);
+            if let Some(g) = &q.group_by {
+                rb = rb.query(&[("group_by", g.as_str())]);
+            }
+            for inc in &q.include {
+                rb = rb.query(&[("include", inc.as_str())]);
+            }
+            if let Some(s) = &q.since {
+                rb = rb.query(&[("since", s.to_rfc3339())]);
+            }
+            if let Some(u) = &q.until {
+                rb = rb.query(&[("until", u.to_rfc3339())]);
+            }
+            Ok(rb)
+        })
+        .await
+}

@@ -84,6 +84,12 @@ The full lifecycle, with no cloud round-trip:
 | `knack pull @other-user/<repo>:<slug>@<ver>` | Full external spec: owner, repo, slug, optional version |
 | `knack run <slug> --input ... --input ...` | Registers a run, writes a `started` event to local JSONL with all inputs |
 | `knack mark <run-id> succeeded --output ... --output ... --note ...` | Closes the loop with outputs, note, and a computed `duration_ms` |
+| `knack runs overview` | Portfolio dashboard: every skill the caller can read, with `regression` and `stale` flags |
+| `knack runs list <slug>` | Page past runs, filter by `--status`, `--version`, `--agent`, `--since`, `--until`, `--note-contains` |
+| `knack runs show <run-id>` | Single run snapshot, including the note and computed duration |
+| `knack runs stats <slug> --group-by [version\|agent\|version,agent]` | Cohort rollup; supports cross-tab grouping |
+| `knack runs trend <slug> --interval day\|week` | Time-bucketed series; every period emits a point (gap-free) |
+| `knack runs diff <slug> <ver-a> <ver-b>` | Side-by-side cohort comparison; deltas `null` when either cohort empty |
 
 ## Run telemetry schema
 
@@ -150,6 +156,40 @@ the next successful `run` / `mark` / `publish` carries the queued commits.
    `SKILL.md`'s `## Intuition` block (add an `### Except when` carve-out
    or an `### Edge cases` bullet), then `knack publish` again. Version
    goes from 0.1.1 to 0.1.2. The git log is the history.
+
+## Observability for agents
+
+Knack is designed for AI coding agents at the driver's seat. The
+read-side commands are agent-first: `--json` is the load-bearing
+surface, the human renderers are a fallback. A typical 2026-agent loop:
+
+```bash
+# 1. Orient — what needs attention across the portfolio?
+knack runs overview --json --since 30d
+#    → data.summary.regressions: ["email-triage"]
+#      data.summary.skills_stale: 2
+
+# 2. Diagnose — cross-tab on the flagged skill
+knack runs stats email-triage --json --group-by version,agent
+#    → did 0.1.4 regress on cursor but not claude-code? buckets[] tells you.
+
+# 3. Trend — confirm trajectory direction
+knack runs trend email-triage --json --interval day --since 14d
+#    → series[] over time; branch on monotonic success_rate.
+
+# 4. Drill — read the notes that explain the failure mode
+knack runs list email-triage --status failed --since 7d \
+    --note-contains timeout --json
+#    → items[] with notes; pattern becomes the next ## Intuition rule.
+
+# 5. Iterate — edit SKILL.md, knack publish, then verify.
+knack runs diff email-triage 0.1.3 0.1.4 --json
+#    → delta.success_rate ≥ 0 means the publish landed clean.
+```
+
+Same JSON shape in self-host (CLI aggregates local JSONL) and cloud
+(CLI calls the API). The schema is stable: agents key on
+`$schema: "knack://cli/v1"`.
 
 ## For agents loading this README
 

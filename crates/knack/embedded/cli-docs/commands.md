@@ -41,10 +41,48 @@ in both modes; the few that don't are flagged below.
     knack run <slug>[@<semver>] [--input PATH]... [--runtime TAG] [--agent-id ID]
     knack mark <run_id> succeeded|failed [--note "..."] [--reason "..."] [--output PATH]...
 
-`--input` and `--output` are repeatable. In github mode, run telemetry
-writes to `<your-clone>/runs/<YYYY-MM>/<YYYY-MM-DD>.jsonl` and is NOT
-auto-committed (you commit + push the `runs/` tree yourself, or let the
-next `knack publish` carry it).
+`--input` and `--output` are repeatable. In github mode every `run` and
+`mark` auto-commits the affected JSONL day-file and pushes to `origin/main`
+(commit message: `telemetry: <event> <skill> <run_id>`). The local append
+always succeeds even when the push fails (offline, branch diverged); a
+stderr warning tells you how to recover, and the next successful command
+carries the queued commits.
+
+### Analyzing runs
+
+    knack runs overview [--since DATE] [--until DATE] [--min-runs N]
+    knack runs list <slug> [--status STATUS] [--version V] [--agent TAG] \
+                           [--since DATE] [--until DATE] [--note-contains TEXT] \
+                           [--limit N] [--cursor C]
+    knack runs show <run-id>
+    knack runs stats <slug> [--group-by version|agent|version,agent] \
+                            [--since DATE] [--until DATE]
+    knack runs trend <slug> [--interval day|week] \
+                            [--group-by DIMS] [--since DATE] [--until DATE]
+    knack runs diff <slug> <ver-a> <ver-b> [--since DATE] [--until DATE]
+
+`--since` / `--until` accept `YYYY-MM-DD` or `<N>d` (e.g. `7d` = seven
+days back). Default window: 30 days back to today.
+
+`overview` is the portfolio dashboard — one row per skill the caller can
+read, with `regression` and `stale` flags. Default first call when an
+agent loads without a specific slug in mind.
+
+`stats` groups by one or more dimensions (`version`, `agent`, or both).
+Each bucket carries `key`, `runs_total`, `runs_succeeded`, `runs_failed`,
+`success_rate`, `p50_ms`, `p95_ms`, `last_run_at`, and up to 3 top
+failure notes.
+
+`trend` is the time axis: daily or weekly buckets. Every period in the
+window emits a point — empty ones carry `buckets: []` — so the series is
+gap-free and plot-ready.
+
+`diff` is two versions side-by-side; `delta` is `null` when either side
+has zero runs.
+
+Both modes return the same schema. Self-host aggregates JSONL locally;
+cloud calls `/skills/{id}/stats?group_by=...`, `/skills/{id}/stats/trend`,
+or `/runs/overview`.
 
 ### Interview (agent-driven authoring)
 
