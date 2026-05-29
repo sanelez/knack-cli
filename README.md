@@ -2,12 +2,12 @@
 
 # Knack
 
-A CLI for authoring, validating, versioning, running, and observing agent skills.
+An agent-driven CLI for authoring, validating, versioning, running, and observing agent skills.
 
-Knack turns the workflows you do over and over into skills:
+Knack turns your clunky Skill.md files into managed workflows:
 structured folders of instructions, examples, tests, and metadata that any
-agent (Claude, Cursor, Codex, Cowork) can load. The artifact is real and
-inspectable, and immutable. Every skill run is logged. When a skill
+agent (Claude, Cursor, Codex, Cowork) can load. The artifact is
+inspectable and immutable; every skill run is logged. When a skill
 misses an edge case, you flag it, the skill gets a new rule, and the next
 run is sharper than the last.
 
@@ -63,6 +63,26 @@ knack auth login
 Same commands. Same skill folder format. The backend just decides where
 versions and run logs go. Pick once at `knack init`; switch later by
 re-running it.
+
+## The iteration loop
+
+1. Author. `knack create my-skill` scaffolds. Your agent runs the 6-phase
+   interview, filling in `SKILL.md` (procedure plus the `## Intuition`
+   subsections) and `examples/`.
+2. Validate. `knack validate my-skill` catches schema mistakes locally
+   before you burn a version number.
+3. Publish. `knack publish my-skill` bumps the version, commits, tags,
+   pushes. Tag is `my-skill/v<X.Y.Z>`. Immutable.
+4. Run. `knack run my-skill --input ...`. The agent does the actual work
+   using SKILL.md as its playbook. CLI generates the `run_id` and writes
+   the `started` event.
+5. Mark. `knack mark <run-id> succeeded --output ...` (or
+   `failed --reason "..."`). The note text feeds back into the next
+   interview pass.
+6. Bump. When a miss matters, edit the relevant subsection of
+   `SKILL.md`'s `## Intuition` block (add an `### Except when` carve-out
+   or an `### Edge cases` bullet), then `knack publish` again. Version
+   goes from 0.1.1 to 0.1.2. The git log is the history.
 
 ## What works in self-host mode
 
@@ -137,59 +157,6 @@ If the push fails (offline, branch diverged), the local append still
 succeeds and the CLI prints a stderr warning telling you how to recover;
 the next successful `run` / `mark` / `publish` carries the queued commits.
 
-## The iteration loop
-
-1. Author. `knack create my-skill` scaffolds. Your agent runs the 6-phase
-   interview, filling in `SKILL.md` (procedure plus the `## Intuition`
-   subsections) and `examples/`.
-2. Validate. `knack validate my-skill` catches schema mistakes locally
-   before you burn a version number.
-3. Publish. `knack publish my-skill` bumps the version, commits, tags,
-   pushes. Tag is `my-skill/v<X.Y.Z>`. Immutable.
-4. Run. `knack run my-skill --input ...`. The agent does the actual work
-   using SKILL.md as its playbook. CLI generates the `run_id` and writes
-   the `started` event.
-5. Mark. `knack mark <run-id> succeeded --output ...` (or
-   `failed --reason "..."`). The note text feeds back into the next
-   interview pass.
-6. Bump. When a miss matters, edit the relevant subsection of
-   `SKILL.md`'s `## Intuition` block (add an `### Except when` carve-out
-   or an `### Edge cases` bullet), then `knack publish` again. Version
-   goes from 0.1.1 to 0.1.2. The git log is the history.
-
-## Observability for agents
-
-Knack is designed for AI coding agents at the driver's seat. The
-read-side commands are agent-first: `--json` is the load-bearing
-surface, the human renderers are a fallback. A typical 2026-agent loop:
-
-```bash
-# 1. Orient — what needs attention across the portfolio?
-knack runs overview --json --since 30d
-#    → data.summary.regressions: ["email-triage"]
-#      data.summary.skills_stale: 2
-
-# 2. Diagnose — cross-tab on the flagged skill
-knack runs stats email-triage --json --group-by version,agent
-#    → did 0.1.4 regress on cursor but not claude-code? buckets[] tells you.
-
-# 3. Trend — confirm trajectory direction
-knack runs trend email-triage --json --interval day --since 14d
-#    → series[] over time; branch on monotonic success_rate.
-
-# 4. Drill — read the notes that explain the failure mode
-knack runs list email-triage --status failed --since 7d \
-    --note-contains timeout --json
-#    → items[] with notes; pattern becomes the next ## Intuition rule.
-
-# 5. Iterate — edit SKILL.md, knack publish, then verify.
-knack runs diff email-triage 0.1.3 0.1.4 --json
-#    → delta.success_rate ≥ 0 means the publish landed clean.
-```
-
-Same JSON shape in self-host (CLI aggregates local JSONL) and cloud
-(CLI calls the API). The schema is stable: agents key on
-`$schema: "knack://cli/v1"`.
 
 ## For agents loading this README
 
@@ -224,18 +191,6 @@ Operating surface, when you're driving the CLI on a user's behalf:
 - The canonical agent playbook is `knack info`. It fetches
   `getknack.ai/agent.txt` and falls back to the embedded copy on offline.
 
-## What's in this repo
-
-```
-crates/knack/                  the CLI binary (Rust)
-crates/knack-types/            shared wire-format types (on crates.io)
-crates/knack-backend-github/   self-host implementation (libgit2 + gh CLI + GitHub Contents API)
-skills/interview/              the 6-phase interview skill the agent loads
-skills/installer/              the install skill agents load on first ask
-install.sh / install.ps1       curl|sh / irm|iex installer
-.github/workflows/             CI + release matrix (macos x86_64, linux x86_64-musl, linux aarch64-musl, windows x86_64)
-```
-
 ## Contributing
 
 Bug fixes, typo fixes, and documentation improvements are welcome. Feature
@@ -245,3 +200,7 @@ direction before code lands. See [CONTRIBUTING.md](CONTRIBUTING.md).
 ## License
 
 MIT. See [LICENSE](LICENSE).
+
+## Star History
+
+[![Star History Chart](https://api.star-history.com/svg?repos=jordan-gibbs/knack-cli&type=Date)](https://star-history.com/#jordan-gibbs/knack-cli&Date)
