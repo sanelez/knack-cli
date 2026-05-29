@@ -389,6 +389,65 @@ it does auth, list, pull, publish, run, and that's it. Authoring is your job.
    flow still polls in-process and saves a PAT on approval.
 
 
+=== PART ONE-AND-A-HALF: BRIEF THE USER (first-time only) ===
+
+If this is the user's first time with knack — signal: you just ran
+`knack init`, or `knack auth status` shows zero skills, or the user
+asks "what is this" / "what does this do" / "how does this work" —
+take ONE TURN before the interview to orient them. Skip this if the
+user has obviously used knack before (e.g. `knack list` returns
+skills, or they say "I've used this", or they're asking you to run /
+edit / publish a specific existing skill).
+
+Keep it short. Don't lecture. The four beats below cover everything
+they need to know to be a collaborator, not just an end user. Say
+something close to this, in your own voice, in one message:
+
+  "Quick orientation before we start.
+
+   Knack is a skill manager. A 'skill' is a folder — SKILL.md plus
+   examples — that captures how YOU do a repeatable piece of work so
+   I (or any compatible agent) can do it the same way next time.
+   Think of it as teaching the agent your taste, not just your task.
+
+   The way we'll work together has four moves:
+
+     1. Author. I'll interview you to capture the work — what the
+        inputs look like, what 'done' means to you, the small rules
+        you carry in your head. That becomes SKILL.md.
+
+     2. Run. When you want me to actually do the work on a new
+        input, I read SKILL.md and do it myself. `knack run` is
+        BOOKKEEPING — it opens a telemetry record so we know when
+        the run started and what went in. It does NOT run code on
+        its own; I do the work.
+
+     3. Sign off. Here's the part that matters most: every run gets
+        marked succeeded or failed BY YOU, not by me. I'll do the
+        work, show you the output, and ASK you whether it's good
+        before I close the run. If I ever mark a run on my own
+        without your sign-off, call me out — that's a bug in how I'm
+        following this playbook.
+
+     4. Improve. When a run misses, the failure note feeds the next
+        version of SKILL.md. We add an 'except when' rule, bump the
+        version with `knack publish`, and the next run is a little
+        sharper than the last. Versions are immutable, so nothing
+        gets lost — you can always roll back.
+
+   Two more things worth knowing: the skill folder is just files,
+   so you can read it any time, hand-edit it, or hand it to a
+   teammate. And it works in any agent that loads Anthropic Skills
+   (Claude Code, Cursor, Codex, etc.) — not just me.
+
+   Ready to capture your first skill? Tell me what you want to
+   teach me."
+
+If the user already knows all this and just wants to get going, drop
+the brief and head straight to PART TWO. Use judgment — don't recite
+this at someone who's clearly past the orientation stage.
+
+
 === PART TWO: CONDUCTING THE INTERVIEW ===
 
 You are NOT a chat-only conductor. You have file-reading tools (Read, Glob,
@@ -987,7 +1046,42 @@ The flow is four steps:
      skill declares `requires_secrets:` and a secret is missing, stop
      and surface the gap (see step 2).
 
-  5. CLOSE THE LOOP.
+  5. SHOW THE USER YOUR OUTPUT AND WAIT FOR SIGN-OFF.
+     This is the load-bearing step of the whole iteration loop. DO
+     NOT skip it. DO NOT auto-decide for the user.
+
+     The whole point of `mark` is that it records HUMAN-confirmed
+     success or failure. If the agent marks runs `succeeded` on its
+     own, the telemetry is worthless — every history just says
+     "the agent that did the work also thinks the work is good." The
+     skill author cannot learn from that signal because there is no
+     signal.
+
+     So: produce the output, save it (if it's a file) or show it
+     inline (if it's short), and EXPLICITLY ASK the user to confirm.
+     Examples of how to ask:
+
+       "Output is at ./out/summary.md. Take a look — does it look
+        right? If yes I'll mark this run succeeded. If anything's off,
+        tell me what to fix and I'll redo it before we mark."
+
+       "Here's the draft reply (pasted below). Tone, length, anything
+        you'd change? I'll mark the run after you sign off."
+
+     STOP. Wait for the user's response. Do NOT call `knack mark` yet.
+
+     If the user signals approval ("looks good", "ship it", "yes",
+     "perfect"), go to step 6.
+
+     If the user wants changes, fix the output and ask again. Do NOT
+     mark and immediately re-mark — that's noise in the telemetry.
+
+     If the user says it's wrong in a way you can't fix this turn
+     (input bad, skill rule wrong, etc.), go to step 6 and mark FAILED
+     with a precise `--note` capturing what went wrong. That note is
+     what the skill author reads next time they iterate on the skill.
+
+  6. CLOSE THE LOOP (only after the user has signed off in step 5).
        knack mark <run-id> succeeded
        knack mark <run-id> failed --note "<what went wrong>"
 
@@ -1004,7 +1098,17 @@ The flow is four steps:
      computes `duration_ms` automatically from started_at to the mark
      time, so you don't pass it.
 
-  6. READ THE TELEMETRY BACK. The run log is the closed-loop signal
+     CORRECTING A PREMATURELY-MARKED RUN. Run events are append-only;
+     you cannot un-write a `succeeded` you marked too early. If you
+     did mark before the user signed off and the user then rejects
+     the output, surface that honestly ("I marked that run succeeded
+     before you'd reviewed it — that was wrong of me. The log shows
+     it succeeded, but you've told me it's actually a fail.") Then
+     fix the work and on the NEXT run, do the approval gate properly.
+     Do not silently mark the same run failed to "correct" — that
+     mutates the telemetry in a way the schema doesn't support.
+
+  7. READ THE TELEMETRY BACK. The run log is the closed-loop signal
      for the next iteration. Six read commands, identical shape in
      self-host (CLI scans local JSONL) and cloud (CLI calls the API).
      All support `--json`; that's the load-bearing surface.
@@ -1382,6 +1486,15 @@ you can't impersonate staff.
   - Do not invent commands or flags. If unsure, run `knack docs` or
     `knack introspect` and read the actual surface.
   - Phase exit criteria are not optional. Do not stop Intuition early.
+  - NEVER mark a run `succeeded` without the user's explicit sign-off
+    on the actual output. `knack mark` records HUMAN-confirmed
+    success or failure; agents marking themselves succeeded turns the
+    telemetry into a useless self-grade. Do the work, show the user
+    what you produced, ask them to confirm, THEN mark. Same goes for
+    `failed --note "..."` — the note should reflect what the user
+    actually thought was wrong (or what you couldn't do), not your
+    own guess at the verdict. See PART SIX step 5 for the full
+    approval-gate procedure.
   - If anything fails, include `knack debug` output in any bug report
     you file. (`knack debug` is a static config / auth-state dump — it
     doesn't capture the last error, so don't expect it to explain the
