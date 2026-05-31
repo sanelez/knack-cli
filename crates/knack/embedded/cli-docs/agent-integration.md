@@ -24,13 +24,21 @@ fallback.
 ### Starting cold (no slug in hand)
 
     knack runs overview --json --since 30d
-    → data.summary.regressions: [slug, ...]   ← immediate work list
-    → data.summary.skills_stale: <count>      ← never-used skills
     → data.skills[]: per-skill row with current_version, success_rate,
       regression (or null), stale (bool), last_run_at
 
-Default first call. If `regressions` is non-empty, drill into one of
-the slugs. If `stale` is high, the issue is adoption, not quality.
+Default first call. Iterate `data.skills` and pick the rows where
+`regression` is non-null — that's the work list. Rows where `stale` is
+true are skills that haven't been used at all in the window; an
+adoption problem, not a quality one.
+
+NOTE on `regression`: the field is **suppressed when either the
+current or prior cohort has fewer than 3 marked runs**
+(`MIN_REGRESSION_RUNS = 3` server-side). So `regression: null` doesn't
+necessarily mean "this skill is fine" — it may mean "not enough
+samples to compare." If you have other signal that something changed
+(e.g. you just published a new version), drill into `runs stats
+--group-by version` to read the per-cohort rates directly.
 
 ### Diagnosing one skill
 

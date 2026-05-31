@@ -27,9 +27,18 @@ Set standard env vars:
 
 ### `AUTH_REQUIRED` despite being logged in (cloud mode)
 
-Token expired. Refresh:
+Token expired. PATs default to a 90-day TTL (since v0.7.8), so plan on
+re-running `knack auth login` quarterly. To mint a no-expiry token for
+unattended CI:
 
-    knack auth login
+    knack auth login --never-expires
+
+To explicitly set a TTL (1..730 days):
+
+    knack auth login --expires-in-days 365
+
+The CLI prints an `AuthRequired` warning one day before expiry, so a
+re-login is rarely a surprise.
 
 ### `AUTH_REQUIRED` in self-host mode
 

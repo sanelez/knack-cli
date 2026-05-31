@@ -15,10 +15,13 @@ helper. Verify with:
 If gh isn't authenticated, run `gh auth login` once. After that, knack
 in github mode never asks for credentials again.
 
-`knack auth login` in github mode is a friendly no-op (it prints a note
-explaining that self-host doesn't need a knack.ai sign-in and exits 0).
-`knack auth status` shows the configured backend, repo, local clone, and
-resolved `gh` user.
+`knack auth login` in github mode probes `gh api user` and reports
+whether gh is installed and authenticated. No Knack token is minted —
+the `gh` credential is the only thing every subsequent command uses.
+Exit is always 0 (informational), but the JSON envelope carries
+`needs_action: true` when gh isn't set up so an agent driving the CLI
+can branch on it. `knack auth status` shows the configured backend,
+repo, local clone, and resolved `gh` user.
 
 ## Knack Cloud mode
 
@@ -27,6 +30,13 @@ resolved `gh` user.
 Opens your default browser to a Clerk-gated approval page. After you
 sign in and click Approve, the CLI receives a Personal Access Token
 (PAT) and stores it in `~/.knack/auth.json`.
+
+PATs **default to a 90-day expiry**. Override with
+`--expires-in-days N` (1..730) or opt out entirely with
+`--never-expires` — but a leaked never-expiring PAT works forever, so
+reach for it only on unattended CI where the token lives in a vault and
+rotation is impractical. The CLI surfaces an `AuthRequired` one day
+before expiry so a re-login is rarely a surprise.
 
 ### Headless / CI
 

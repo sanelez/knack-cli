@@ -97,7 +97,7 @@ The full lifecycle, with no cloud round-trip:
 |---|---|
 | `knack init --self-host` | Creates the GitHub repo (if missing), clones locally, scaffolds layout, pushes the initial commit |
 | `knack auth status` | Shows backend, repo, local clone, resolved `gh` user |
-| `knack auth login` | Friendly no-op (you don't need to sign into anything) |
+| `knack auth login` | Probes `gh api user` and reports whether gh is installed + authenticated. No Knack token minted; the gh credential is what every subsequent command uses. |
 | `knack create <slug>` | Scaffolds a new skill folder in your clone |
 | `knack validate <slug>` | Pre-flight checks `SKILL.md` + `meta.knack.yaml` + `tests/` |
 | `knack publish <slug>` | Bumps version in `meta.knack.yaml`, commits, tags `<slug>/v<X.Y.Z>`, pushes |
@@ -107,8 +107,9 @@ The full lifecycle, with no cloud round-trip:
 | `knack pull <slug>@<ver>` | Pulls a specific historical version |
 | `knack pull @other-user/<slug>` | Fetches from any public `<owner>/knack-skills` repo via the GitHub Contents API |
 | `knack pull @other-user/<repo>:<slug>@<ver>` | Full external spec: owner, repo, slug, optional version |
-| `knack run <slug> --input ... --input ...` | Registers a run, writes a `started` event to local JSONL with all inputs |
-| `knack mark <run-id> succeeded --output ... --output ... --note ...` | Closes the loop with outputs, note, and a computed `duration_ms` |
+| `knack export` | Self-host: points at the local `skills/` directory (no work to do). Cloud: bulk-pulls every skill in the library into `./knack-export-<date>/<scope>/<slug>/`. |
+| `knack run <slug> --input ... --input ...` | Registers a run, writes a `started` event to local JSONL with all inputs. `--no-push` skips the telemetry git push (so does `KNACK_AUTO_PUSH=0` or `auto_push: false` in `knack.yaml`). |
+| `knack mark <run-id> succeeded --output ... --output ... --note ...` | Closes the loop with outputs, note, and a computed `duration_ms`. Pass a comma-separated list (`a,b,c`) to bulk-verdict several runs at once. |
 | `knack runs overview` | Portfolio dashboard: every skill the caller can read, with `regression` and `stale` flags |
 | `knack runs list <slug>` | Page past runs, filter by `--status`, `--version`, `--agent`, `--since`, `--until`, `--note-contains` |
 | `knack runs show <run-id>` | Single run snapshot, including the note and computed duration |
@@ -155,12 +156,29 @@ modes; in cloud mode it also lands server-side for the rollups.
 [`crates/knack-backend-github/src/runs.rs`](crates/knack-backend-github/src/runs.rs).
 
 **Push policy.** Every `knack run` and `knack mark` auto-commits the
-affected JSONL file and pushes to `origin/main`. The commit message is
-`telemetry: <event> <skill> <run_id>`. Only the day's JSONL is staged, so
-unrelated working-tree changes are NOT swept into the telemetry commit.
-If the push fails (offline, branch diverged), the local append still
-succeeds and the CLI prints a stderr warning telling you how to recover;
-the next successful `run` / `mark` / `publish` carries the queued commits.
+affected JSONL file and pushes to the repo's default remote/branch.
+The commit message is `telemetry: <event> <skill> <run_id>`. Only the
+day's JSONL is staged, so unrelated working-tree changes are NOT swept
+into the telemetry commit. If the push fails (offline, branch diverged),
+the local append still succeeds and the CLI prints a stderr warning
+telling you how to recover; the next successful `run` / `mark` /
+`publish` carries the queued commits.
+
+The remote name and default branch are resolved per-repo (in order):
+`KNACK_REMOTE_NAME` / `KNACK_REMOTE_BRANCH` env vars → local
+`git symbolic-ref refs/remotes/<remote>/HEAD` → `gh repo view --json
+defaultBranchRef` → `origin/main` fallback. So `master`-default repos,
+fork workflows, and custom remotes work without configuration.
+
+**Three ways to opt out** of the auto-push (the local commit still lands
+either way; only the network hop is skipped):
+
+```
+knack run --no-push                  # per-invocation
+KNACK_AUTO_PUSH=0 knack run ...      # per-shell
+# or in <repo>/knack.yaml:
+auto_push: false                     # persistent per-workspace
+```
 
 
 ## For agents loading this README

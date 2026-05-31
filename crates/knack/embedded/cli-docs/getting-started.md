@@ -32,7 +32,10 @@ What this does, in one shot:
   - Creates github.com/<your-handle>/<your-skills-repo> if it doesn't exist
   - Clones it locally to ~/<your-skills-repo> (override with --local-path)
   - Scaffolds skills/, runs/, knack.yaml, README.md, .gitignore
-  - Makes the initial commit and pushes to origin/main
+  - Makes the initial commit and pushes to the repo's default branch
+    (fresh gh-created repos default to `main`; subsequent telemetry
+    pushes resolve the remote/branch per-repo, so `master` repos and
+    fork workflows work without configuration)
   - Writes ~/.knack/config.yaml so future commands know to use github
 
 ### Knack Cloud

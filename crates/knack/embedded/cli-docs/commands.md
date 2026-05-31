@@ -15,7 +15,11 @@ in both modes; the few that don't are flagged below.
 
 ### Auth
 
-    knack auth login    [--no-browser] [--account NAME]      # cloud only; no-op in github mode
+    knack auth login    [--no-browser] [--account NAME] \
+                        [--expires-in-days N | --never-expires] [--label LBL]
+        # cloud: device flow → mints a PAT, default 90d TTL
+        #        --never-expires opts out (use only for unattended CI + vaults)
+        # github: probes `gh api user`, reports gh state (no Knack token minted)
     knack auth logout   [--account NAME]
     knack auth status                                        # mode-aware: shows backend + identity
     knack auth refresh                                       # cloud only; no-op in github mode
@@ -34,19 +38,41 @@ in both modes; the few that don't are flagged below.
     knack pull <slug>[@<semver>] [--target DIR] [--global]
     knack pull @<owner>/<slug>[@<ver>]                       # external GitHub via Contents API
     knack pull @<owner>/<repo>:<slug>[@<ver>]                # external with custom repo
+    knack export [--to DIR] [--scope SCOPE] [--limit N]      # cloud: bulk pull entire library
+                                                              # github: prints local skills/ path
     knack diff <slug>@<a> <slug>@<b>
 
 ### Running + telemetry
 
-    knack run <slug>[@<semver>] [--input PATH]... [--runtime TAG] [--agent-id ID]
-    knack mark <run_id> succeeded|failed [--note "..."] [--reason "..."] [--output PATH]...
+    knack run <slug>[@<semver>] [--input PATH]... [--runtime TAG] \
+                                [--agent-id ID] [--no-push]
+    knack mark <run_id>[,<run_id>...] succeeded|failed \
+                                [--note "..."] [--reason "..."] \
+                                [--output PATH]... [--no-push]
 
-`--input` and `--output` are repeatable. In github mode every `run` and
-`mark` auto-commits the affected JSONL day-file and pushes to `origin/main`
-(commit message: `telemetry: <event> <skill> <run_id>`). The local append
-always succeeds even when the push fails (offline, branch diverged); a
-stderr warning tells you how to recover, and the next successful command
-carries the queued commits.
+`--input` and `--output` are repeatable. `mark` accepts a comma-separated
+list of run-ids to verdict several runs in one call; the same `--note`
+and `--output` apply to every id.
+
+In github mode every `run` and `mark` auto-commits the affected JSONL
+day-file and pushes to the repo's default remote/branch (commit message:
+`telemetry: <event> <skill> <run_id>`). The local append always succeeds
+even when the push fails (offline, branch diverged); a stderr warning
+tells you how to recover, and the next successful command carries the
+queued commits.
+
+The push target is resolved per-repo: `KNACK_REMOTE_NAME` /
+`KNACK_REMOTE_BRANCH` env vars override; otherwise `git symbolic-ref
+refs/remotes/<remote>/HEAD` is consulted, then `gh repo view`, then the
+`origin/main` fallback. `master`-default repos and fork workflows work
+without any configuration.
+
+Three opt-outs for the auto-push (local commit still lands either way):
+
+    knack run --no-push                    # per-invocation
+    KNACK_AUTO_PUSH=0 knack run ...        # per-shell env
+    # or in <repo>/knack.yaml:
+    auto_push: false                        # persistent per-workspace
 
 ### Analyzing runs
 
@@ -62,16 +88,25 @@ carries the queued commits.
     knack runs diff <slug> <ver-a> <ver-b> [--since DATE] [--until DATE]
 
 `--since` / `--until` accept `YYYY-MM-DD` or `<N>d` (e.g. `7d` = seven
-days back). Default window: 30 days back to today.
+days back). Default window for `runs list` / `stats` / `trend`: 30 days
+back to today. `knack mark`'s parent-run resolver walks every monthly
+JSONL directory in self-host mode (not capped at 30 days), so a mark
+weeks after `started` still finds its parent run.
 
 `overview` is the portfolio dashboard — one row per skill the caller can
 read, with `regression` and `stale` flags. Default first call when an
-agent loads without a specific slug in mind.
+agent loads without a specific slug in mind. The `regression` field is
+**suppressed when either cohort has fewer than 3 marked runs**
+(`MIN_REGRESSION_RUNS = 3`), so `regression: null` doesn't necessarily
+mean "no problem" — cross-check with `runs stats --group-by version`.
 
 `stats` groups by one or more dimensions (`version`, `agent`, or both).
 Each bucket carries `key`, `runs_total`, `runs_succeeded`, `runs_failed`,
 `success_rate`, `p50_ms`, `p95_ms`, `last_run_at`, and up to 3 top
-failure notes.
+failure notes. Notes are clustered on a normalized form (lowercase +
+collapsed whitespace + stripped trailing punctuation), so cosmetic
+variants like "Edge case BROKE" / "edge case broke ." aggregate to one
+entry; the original first-seen casing is preserved for display.
 
 `trend` is the time axis: daily or weekly buckets. Every period in the
 window emits a point — empty ones carry `buckets: []` — so the series is

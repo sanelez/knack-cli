@@ -268,12 +268,16 @@ it does auth, list, pull, publish, run, and that's it. Authoring is your job.
      - Creates github.com/<owner>/<repo-name> if it doesn't exist
      - Clones it locally to ~/<repo-name> (or --local-path)
      - Scaffolds skills/, runs/, knack.yaml, README.md, .gitignore
-     - Makes the initial commit and pushes to origin/main
+     - Makes the initial commit and pushes to the repo's default branch
+       (`origin/main` for a freshly-created gh repo; `git symbolic-ref`
+       on the local clone is consulted for subsequent pushes)
      - Writes ~/.knack/config.yaml so future commands know to use github
 
    After this succeeds, SKIP step 3 (SIGN IN) entirely. Self-host mode does
-   not use knack.ai auth. `knack auth login` is a friendly no-op in this
-   mode; `knack auth status` reports your gh user and backend config.
+   not use knack.ai auth. `knack auth login` in self-host actually probes
+   `gh api user` and reports whether gh is installed and authenticated —
+   it's an honest status check, not a no-op, so an agent driving the CLI
+   can confirm gh works before publishing.
 
    --- KNACK CLOUD ---
 
@@ -304,8 +308,15 @@ it does auth, list, pull, publish, run, and that's it. Authoring is your job.
 
    That file is readable from every future shell on this machine —
    including sandboxed agents like Codex CLI, which mount the real
-   user's HOME read-only. ONE sign-in, persists everywhere, forever
-   (or until the user revokes from getknack.ai/app/settings#cli-tokens).
+   user's HOME read-only. ONE sign-in, persists across shells until
+   the token expires.
+
+   Token TTL: the CLI defaults `--expires-in-days` to **90 days**. After
+   that, `knack auth login` again. For unattended CI where rotation
+   is impractical and the token lives in a vault, pass `--never-expires`
+   to mint a no-expiry token (explicit opt-in only — a leaked
+   never-expiring PAT is useful to an attacker forever). Either way the
+   user can revoke from getknack.ai/app/settings#cli-tokens.
 
    If the user is new the same flow creates an account. Confirm with:
      knack auth status     (should print their email + plan)
@@ -1098,6 +1109,26 @@ The flow is four steps:
      computes `duration_ms` automatically from started_at to the mark
      time, so you don't pass it.
 
+     BULK MARK. Pass a comma-separated list of run-ids to verdict
+     several runs in one call. Same `--note` / `--output` apply to
+     every id. The CLI fans out client-side; partial failures are
+     reported per-id in the output.
+       knack mark <id1>,<id2>,<id3> succeeded --note "batch ok"
+
+     SELF-HOST AUTO-PUSH. In github mode every `run` / `mark` also
+     git-pushes the telemetry commit to origin's default branch. Three
+     opt-outs, in precedence:
+       knack run --no-push          (per-invocation)
+       KNACK_AUTO_PUSH=0 knack run  (per-shell env)
+       <repo>/knack.yaml:
+         auto_push: false           (persistent per-workspace)
+     The local commit always lands; only the network hop is skipped,
+     so the next pushed event catches up. The remote name and default
+     branch are resolved per-repo (env override → `git symbolic-ref` →
+     `gh repo view` → `origin/main` fallback), so repos with `master`,
+     fork workflows, or non-`origin` remotes don't need configuration.
+     Override with `KNACK_REMOTE_NAME` / `KNACK_REMOTE_BRANCH` env vars.
+
      CORRECTING A PREMATURELY-MARKED RUN. Run events are append-only;
      you cannot un-write a `succeeded` you marked too early. If you
      did mark before the user signed off and the user then rejects
@@ -1119,11 +1150,16 @@ The flow is four steps:
          → portfolio dashboard, one row per skill the caller can read.
          → Returns `data.skills[]` with success_rate, p50_ms,
            last_run_at, regression (or null), stale (bool).
-         → Plus `data.summary.regressions: ["slug1", "slug2"]` so you
-           can branch immediately without scanning the array.
+         → `regression` is suppressed when either the current or prior
+           version cohort has fewer than 3 marked runs (`MIN_REGRESSION_RUNS`
+           = 3 on the server). So `null` doesn't mean "no problem" — it
+           may just mean "not enough samples yet." Don't infer health
+           from null; cross-check with `runs stats --group-by version`.
          → THIS IS THE DEFAULT FIRST CALL when an agent loads with no
            specific slug in mind. It tells you which skills need
            attention right now without you having to know their names.
+         → To branch, iterate `data.skills` and check each row's
+           `regression` field for non-null; that's the slug-to-drill list.
 
      === STATS: AGGREGATE ON ONE OR MORE DIMENSIONS ===
 
@@ -1178,9 +1214,10 @@ The flow is four steps:
 
        After loading with no slug, find work:
          resp = knack runs overview --json --since 30d
-         for slug in resp.data.summary.regressions:
-             # drill: knack runs stats $slug --json --group-by version
-             # decide if the regression is structural or noise
+         for s in resp.data.skills:
+             if s.regression is not None:
+                 # drill: knack runs stats <slug> --json --group-by version
+                 # decide if the regression is structural or noise
 
        Author wants to iterate:
          knack runs list <slug> --status failed --since 14d --json
@@ -1188,9 +1225,11 @@ The flow is four steps:
            `## Intuition / ### Except when` rule in SKILL.md.
 
      Date flags accept `YYYY-MM-DD` or `<N>d` (e.g. `7d` = seven days
-     back). Default window: 30 days back to today. The 30-day default
-     also caps the `find_run` lookback in self-host mode; older runs
-     are still scannable via explicit `--since`.
+     back). Default window for `list` / `stats` / `trend`: 30 days back
+     to today. `find_run` (the resolver `knack mark` uses to locate the
+     parent of a run-id) walks every `runs/YYYY-MM/` directory under the
+     workspace, so marking a run 60+ days after `started` still resolves;
+     the default window only governs the read-side commands.
 
 
 === PART SEVEN (OPTIONAL): SHARING + DISCOVERY ===
@@ -1210,6 +1249,19 @@ Public skills require the user to have claimed a username first:
 
 DELETING is web-only by design — agents cannot delete skills. If the
 user asks to delete one, point them at the workspace Settings tab.
+
+EXPORTING the user's whole library (cloud-mode portability):
+
+  knack export                                  # writes to ./knack-export-<YYYY-MM-DD>/
+  knack export --to ./my-skills/                # custom target dir
+  knack export --scope personal                 # personal scope only
+  knack export --json                           # parseable manifest of what was exported
+
+Walks every skill the caller can read, pulls each bundle from R2, and
+unpacks into `<target>/<scope>/<slug>/` so personal/team/public don't
+collide. Skips legacy (pre-V2a) versions with no bundle and reports
+them inline. In self-host mode export is a no-op — the user already
+has every file in their local clone; the command prints where.
 
 DISCOVERY: search the public marketplace:
 
