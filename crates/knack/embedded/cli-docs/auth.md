@@ -38,6 +38,29 @@ reach for it only on unattended CI where the token lives in a vault and
 rotation is impractical. The CLI surfaces an `AuthRequired` one day
 before expiry so a re-login is rarely a surprise.
 
+### Token scopes
+
+PATs default to `--scope full`, which reproduces every pre-scopes
+behavior. Pass `--scope read` to mint a **read-only PAT**:
+
+    knack auth login --scope read --label "ci-stats-reader"
+
+Read-scoped PATs authenticate fine on GET routes (`/skills`,
+`/runs/overview`, `/runs/by-skill/...`, etc.) but are rejected with
+`403 read_only_token_cannot_write` on every write route, with three
+deliberate exceptions:
+
+- `POST /runs/{id}/mark` — `knack mark` is a verdict on existing work,
+  not authoring. CI agents that read run state and verdict need this.
+- `POST /feedback/threads` + `POST /threads/{id}/messages` — feedback
+  is user-initiated speech, not state mutation on a skill.
+- `DELETE /me/cli-tokens/{id}` — revoking your own token is harmless
+  cleanup and never needs full scope.
+
+Use `--scope read` for any token that lives in a vault and only needs
+to poll telemetry. The blast radius of a leak shrinks from "everything
+the user can do" to "everything the user can read."
+
 ### Headless / CI
 
     knack auth login --no-browser

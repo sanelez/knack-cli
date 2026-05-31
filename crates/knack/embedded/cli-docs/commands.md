@@ -16,9 +16,12 @@ in both modes; the few that don't are flagged below.
 ### Auth
 
     knack auth login    [--no-browser] [--account NAME] \
-                        [--expires-in-days N | --never-expires] [--label LBL]
+                        [--expires-in-days N | --never-expires] \
+                        [--scope full|read] [--label LBL]
         # cloud: device flow → mints a PAT, default 90d TTL
         #        --never-expires opts out (use only for unattended CI + vaults)
+        #        --scope read mints a token denied at write routes (with a small
+        #        allowlist: mark, feedback, revoke-own-token)
         # github: probes `gh api user`, reports gh state (no Knack token minted)
     knack auth logout   [--account NAME]
     knack auth status                                        # mode-aware: shows backend + identity
@@ -76,7 +79,8 @@ Three opt-outs for the auto-push (local commit still lands either way):
 
 ### Analyzing runs
 
-    knack runs overview [--since DATE] [--until DATE] [--min-runs N]
+    knack runs overview [--since DATE] [--until DATE] [--min-runs N] \
+                        [--team <slug-or-id>]
     knack runs list <slug> [--status STATUS] [--version V] [--agent TAG] \
                            [--since DATE] [--until DATE] [--note-contains TEXT] \
                            [--limit N] [--cursor C]

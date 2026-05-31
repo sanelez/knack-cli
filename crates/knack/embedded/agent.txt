@@ -318,6 +318,15 @@ it does auth, list, pull, publish, run, and that's it. Authoring is your job.
    never-expiring PAT is useful to an attacker forever). Either way the
    user can revoke from getknack.ai/app/settings#cli-tokens.
 
+   Token scope: PATs default to `--scope full`, which reproduces every
+   pre-scopes behavior. Pass `--scope read` to mint a read-only PAT —
+   it authenticates fine on GETs but is rejected with `403
+   read_only_token_cannot_write` on every write route EXCEPT a small
+   allowlist: `knack mark` (verdict on existing work), feedback posts
+   (user-initiated speech), and revoking the PAT itself. The blast
+   radius of a leaked read-scope PAT is "everything the user can read."
+   Useful for CI agents that only need to poll telemetry.
+
    If the user is new the same flow creates an account. Confirm with:
      knack auth status     (should print their email + plan)
 
@@ -1160,6 +1169,11 @@ The flow is four steps:
            attention right now without you having to know their names.
          → To branch, iterate `data.skills` and check each row's
            `regression` field for non-null; that's the slug-to-drill list.
+         → `--team <slug-or-id>` (cloud only) scopes overview to one
+           team's library, dropping personal-scope skills. 403 if the
+           caller isn't a member of that team. Useful when the user
+           belongs to multiple teams and wants to see one team's
+           dashboard in isolation.
 
      === STATS: AGGREGATE ON ONE OR MORE DIMENSIONS ===
 

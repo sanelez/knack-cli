@@ -110,7 +110,7 @@ The full lifecycle, with no cloud round-trip:
 | `knack export` | Self-host: points at the local `skills/` directory (no work to do). Cloud: bulk-pulls every skill in the library into `./knack-export-<date>/<scope>/<slug>/`. |
 | `knack run <slug> --input ... --input ...` | Registers a run, writes a `started` event to local JSONL with all inputs. `--no-push` skips the telemetry git push (so does `KNACK_AUTO_PUSH=0` or `auto_push: false` in `knack.yaml`). |
 | `knack mark <run-id> succeeded --output ... --output ... --note ...` | Closes the loop with outputs, note, and a computed `duration_ms`. Pass a comma-separated list (`a,b,c`) to bulk-verdict several runs at once. |
-| `knack runs overview` | Portfolio dashboard: every skill the caller can read, with `regression` and `stale` flags |
+| `knack runs overview [--team <slug-or-id>]` | Portfolio dashboard: every skill the caller can read, with `regression` and `stale` flags. `--team` scopes to one team's library (cloud only). |
 | `knack runs list <slug>` | Page past runs, filter by `--status`, `--version`, `--agent`, `--since`, `--until`, `--note-contains` |
 | `knack runs show <run-id>` | Single run snapshot, including the note and computed duration |
 | `knack runs stats <slug> --group-by [version\|agent\|version,agent]` | Cohort rollup; supports cross-tab grouping |
