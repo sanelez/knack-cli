@@ -62,12 +62,19 @@ knack init --self-host --github-repo <you>/<your-skills-repo>
 
 ```bash
 knack init --cloud
-knack auth login
+knack auth login                       # 90-day PAT by default
+knack auth login --scope read          # read-only PAT for CI
+knack auth login --never-expires       # no-expiry, vault-only
 ```
 
 Same commands. Same skill folder format. The backend just decides where
 versions and run logs go. Pick once at `knack init`; switch later by
 re-running it.
+
+Read-scoped PATs (`--scope read`) authenticate on GETs but are denied at
+write routes with a small allowlist for `knack mark`, feedback posts,
+and revoking themselves. Useful when a CI agent only needs to poll
+telemetry.
 
 ## The iteration loop
 
