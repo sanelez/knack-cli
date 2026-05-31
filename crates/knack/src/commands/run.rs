@@ -61,6 +61,13 @@ pub struct RunArgs {
     /// compat with the v0 `--dry` flag.
     #[arg(long, hide = true, conflicts_with = "no_exec")]
     pub dry: bool,
+
+    /// Self-host only: skip the auto `git push origin main` that follows
+    /// the telemetry commit. The local commit still lands so the next
+    /// pushed event catches up. `KNACK_AUTO_PUSH=0` is the equivalent
+    /// env-level kill switch; either disables the network hop.
+    #[arg(long)]
+    pub no_push: bool,
 }
 
 pub async fn run(args: RunArgs, client: ApiClient, mode: OutputMode) -> CliResult<()> {
@@ -190,12 +197,14 @@ fn github_run(args: &RunArgs, local_path: &std::path::Path, mode: OutputMode) ->
     let agent_tag = args.runtime.clone().or_else(|| Some("agent".to_string()));
     let inputs: Vec<String> = args.input.iter().map(|p| p.display().to_string()).collect();
 
+    let push = resolve_push_flag(local_path, args.no_push);
     let run_id = match knack_backend_github::start_run(
         local_path,
         slug,
         &version,
         agent_tag.as_deref(),
         &inputs,
+        push,
     ) {
         Ok(id) => id,
         Err(e) => {
@@ -233,6 +242,25 @@ fn github_run(args: &RunArgs, local_path: &std::path::Path, mode: OutputMode) ->
         },
     );
     Ok(())
+}
+
+/// Resolve the effective `push` flag for self-host telemetry.
+///
+/// Precedence (most-specific wins):
+/// 1. `--no-push` on the CLI invocation → false
+/// 2. Workspace `knack.yaml` `auto_push: false` → false
+/// 3. Default → true
+///
+/// `KNACK_AUTO_PUSH=0` is enforced inside `commit_and_push_event` itself so
+/// it overrides everything, including a workspace that opted in.
+pub(super) fn resolve_push_flag(repo: &std::path::Path, cli_no_push: bool) -> bool {
+    if cli_no_push {
+        return false;
+    }
+    match knack_backend_github::read_workspace_auto_push(repo) {
+        Ok(Some(false)) => false,
+        _ => true,
+    }
 }
 
 fn read_meta_version(skill_dir: &std::path::Path) -> Result<String, std::io::Error> {

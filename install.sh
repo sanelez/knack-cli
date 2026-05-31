@@ -149,4 +149,5 @@ fi
 
 echo
 echo "Next: run \`knack init\` to pick self-host (GitHub) or Knack Cloud."
+echo "  Self-host prereqs: git + gh CLI on PATH, with \`gh auth login\` done."
 echo "To uninstall later: curl -fsSL https://knack.ai/uninstall.sh | sh"

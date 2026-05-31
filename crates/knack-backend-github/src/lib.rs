@@ -20,4 +20,9 @@ pub use auth::{resolve_token, GithubAuth};
 pub use backend::GithubBackend;
 pub use bootstrap::{bootstrap_repo, BootstrapOpts, BootstrapResult, Visibility};
 pub use external::{parse_spec, pull_external, ExternalSpec};
+pub use git::{resolve_remote, RemoteTarget};
 pub use runs::{find_run, mark_run, start_run, RunSnapshot, DEFAULT_LOOKBACK_DAYS};
+pub use workspace::read_workspace_auto_push;
+
+mod git;
+mod workspace;

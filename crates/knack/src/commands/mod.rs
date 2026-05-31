@@ -7,6 +7,7 @@ pub mod debug;
 pub mod diff;
 pub mod docs;
 pub mod edit;
+pub mod export;
 pub mod feedback;
 pub mod folder;
 pub mod fork;
@@ -54,6 +55,10 @@ pub enum Command {
     /// Pull a skill folder to disk. Accepts `<slug>`, `<slug>@<semver>`,
     /// `@<author>/<slug>`, or `@<author>/<slug>@<semver>`.
     Pull(pull::PullArgs),
+
+    /// Bulk export every skill the caller can read to a local directory.
+    /// Cloud-only meaningful surface; self-host just points at your clone.
+    Export(export::ExportArgs),
 
     /// Diff two versions of a skill (or local vs cloud)
     Diff(diff::DiffArgs),
@@ -211,6 +216,7 @@ pub async fn dispatch(cmd: Command, client: ApiClient, mode: OutputMode) -> CliR
         Command::Auth(c) => auth::run(c, client, mode).await,
         Command::List(a) => list::run(a, client, mode).await,
         Command::Pull(a) => pull::run(a, client, mode).await,
+        Command::Export(a) => export::run(a, client, mode).await,
         Command::Diff(a) => diff::run(a, client, mode).await,
         Command::Create(a) => create::run(a, client, mode).await,
         Command::Edit(a) => edit::run(a, client, mode).await,

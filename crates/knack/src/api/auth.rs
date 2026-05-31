@@ -87,6 +87,8 @@ struct CreateCliTokenRequest<'a> {
     name: &'a str,
     #[serde(skip_serializing_if = "Option::is_none")]
     expires_in_days: Option<i64>,
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    never_expire: bool,
 }
 
 /// Response from `POST /me/cli-tokens`. Contains the plaintext token —
@@ -111,10 +113,12 @@ pub async fn create_cli_token(
     client: &ApiClient,
     name: &str,
     expires_in_days: Option<i64>,
+    never_expire: bool,
 ) -> Result<CreateCliTokenResponse, CliError> {
     let body = serde_json::to_value(&CreateCliTokenRequest {
         name,
         expires_in_days,
+        never_expire,
     })?;
     client
         .send_json::<CreateCliTokenResponse>(|c| {

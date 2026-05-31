@@ -160,7 +160,7 @@ fn scaffold(local_path: &Path, owner: &str, repo: &str) -> Result<()> {
     write_if_missing(
         &local_path.join("knack.yaml"),
         &format!(
-            "# Knack self-host config. Edited by the Knack CLI.\nowner: {owner}\nrepo: {repo}\nformat: knack-skills/v1\n"
+            "# Knack self-host config. Edited by the Knack CLI.\nowner: {owner}\nrepo: {repo}\nformat: knack-skills/v1\n\n# Auto-push telemetry to origin/main after every knack run/mark.\n# Uncomment + set false to skip the push (local commit still lands).\n# `knack run --no-push` or `KNACK_AUTO_PUSH=0` are per-shell equivalents.\n# auto_push: true\n"
         ),
     )?;
     write_if_missing(

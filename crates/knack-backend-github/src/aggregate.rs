@@ -379,7 +379,10 @@ pub fn build_bucket(key: BTreeMap<String, Option<String>>, rows: &[&RunSnapshot]
     let mut failed = 0u64;
     let mut unmarked = 0u64;
     let mut durations: Vec<u64> = Vec::new();
-    let mut notes: HashMap<String, u64> = HashMap::new();
+    // Notes are bucketed by `normalize_note` so cosmetic variants ("Edge
+    // case BROKE", "edge case broke ", "edge case broke.") collapse to one
+    // top-3 entry. Display preserves the first-seen original form.
+    let mut notes: HashMap<String, (String, u64)> = HashMap::new();
     let mut last_run_at: Option<chrono::DateTime<chrono::Utc>> = None;
 
     for s in rows {
@@ -399,7 +402,13 @@ pub fn build_bucket(key: BTreeMap<String, Option<String>>, rows: &[&RunSnapshot]
             if let Some(n) = &s.note {
                 let trimmed = n.trim();
                 if !trimmed.is_empty() {
-                    *notes.entry(trimmed.to_string()).or_insert(0) += 1;
+                    let key = normalize_note(trimmed);
+                    if !key.is_empty() {
+                        let entry = notes
+                            .entry(key)
+                            .or_insert_with(|| (trimmed.to_string(), 0));
+                        entry.1 += 1;
+                    }
                 }
             }
         }
@@ -424,7 +433,7 @@ pub fn build_bucket(key: BTreeMap<String, Option<String>>, rows: &[&RunSnapshot]
     let p95_ms = percentile(&durations, 0.95);
 
     let mut top_notes: Vec<NoteCount> = notes
-        .into_iter()
+        .into_values()
         .map(|(note, count)| NoteCount { note, count })
         .collect();
     top_notes.sort_by(|a, b| b.count.cmp(&a.count).then_with(|| a.note.cmp(&b.note)));
@@ -442,6 +451,14 @@ pub fn build_bucket(key: BTreeMap<String, Option<String>>, rows: &[&RunSnapshot]
         last_run_at,
         top_notes,
     }
+}
+
+/// Bucket key for `top_notes` clustering. Lowercase, collapse internal
+/// whitespace, strip trailing ASCII sentence punctuation.
+fn normalize_note(raw: &str) -> String {
+    let lowered = raw.to_lowercase();
+    let collapsed = lowered.split_whitespace().collect::<Vec<_>>().join(" ");
+    collapsed.trim_end_matches(|c: char| ".!?,;:".contains(c)).to_string()
 }
 
 fn percentile(sorted: &[u64], q: f64) -> Option<u64> {
@@ -610,5 +627,20 @@ mod tests {
         assert_eq!(b.top_notes[0].note, "oom");
         assert_eq!(b.top_notes[1].note, "timeout");
         assert_eq!(b.top_notes[2].note, "schema");
+    }
+
+    #[test]
+    fn top_notes_collapses_cosmetic_variants() {
+        let rows = vec![
+            snap("0.1.0", "failed", Some(100), Some("Edge case BROKE")),
+            snap("0.1.0", "failed", Some(100), Some("edge case broke ")),
+            snap("0.1.0", "failed", Some(100), Some("edge case broke.")),
+        ];
+        let refs: Vec<&RunSnapshot> = rows.iter().collect();
+        let b = build_bucket(version_key("0.1.0"), &refs);
+        assert_eq!(b.top_notes.len(), 1);
+        assert_eq!(b.top_notes[0].count, 3);
+        // First-seen original form is preserved for display.
+        assert_eq!(b.top_notes[0].note, "Edge case BROKE");
     }
 }

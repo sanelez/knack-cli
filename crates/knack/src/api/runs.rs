@@ -90,6 +90,7 @@ pub struct RunsListQuery {
     pub marked_by: Option<String>,
     pub since: Option<DateTime<Utc>>,
     pub until: Option<DateTime<Utc>>,
+    pub note_contains: Option<String>,
     pub limit: Option<u32>,
     pub cursor: Option<String>,
 }
@@ -119,6 +120,9 @@ pub async fn list_for_skill(
             }
             if let Some(u) = &q.until {
                 rb = rb.query(&[("until", u.to_rfc3339())]);
+            }
+            if let Some(nc) = &q.note_contains {
+                rb = rb.query(&[("note_contains", nc.as_str())]);
             }
             if let Some(l) = q.limit {
                 rb = rb.query(&[("limit", l.to_string())]);

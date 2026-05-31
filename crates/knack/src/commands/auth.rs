@@ -56,12 +56,24 @@ pub struct LoginArgs {
     #[arg(long)]
     pub label: Option<String>,
 
-    /// Expire the PAT after N days. Default: never expires. Pass a
-    /// positive integer to opt into rotation; the CLI will surface an
-    /// AuthRequired one day before expiry.
-    #[arg(long, value_name = "DAYS")]
+    /// Expire the PAT after N days. Default: 90. Override with any value
+    /// 1..=730, or pass `--never-expires` to opt out of rotation entirely.
+    /// The CLI surfaces an AuthRequired one day before expiry.
+    #[arg(long, value_name = "DAYS", conflicts_with = "never_expires")]
     pub expires_in_days: Option<i64>,
+
+    /// Mint a PAT with no expiry. A leaked never-expiring token works
+    /// forever — only use this for unattended CI where rotation is
+    /// impractical and the token lives in a vault.
+    #[arg(long)]
+    pub never_expires: bool,
 }
+
+/// Default PAT TTL in days. A leaked `~/.knack/auth.json` shouldn't be
+/// useful for years; 90 days balances "agent doesn't re-auth every week"
+/// against "compromised token has a forced sunset." Users on long-running
+/// CI can opt into `--never-expires` or push the cap with `--expires-in-days`.
+pub const DEFAULT_PAT_TTL_DAYS: i64 = 90;
 
 pub async fn run(cmd: AuthCmd, client: ApiClient, mode: OutputMode) -> CliResult<()> {
     // In github self-host mode the cloud auth surface is meaningless. Route
@@ -101,23 +113,79 @@ pub async fn run(cmd: AuthCmd, client: ApiClient, mode: OutputMode) -> CliResult
 }
 
 fn github_login_noop(mode: OutputMode) -> CliResult<()> {
+    // Self-host doesn't mint a Knack token, but the user still needs `gh`
+    // authenticated for every subsequent command (publish, telemetry push,
+    // pull). Probing it here surfaces the actual state instead of pretending
+    // sign-in is "already done."
+    let probe = probe_gh_auth();
+    let needs_action = !matches!(probe, GhAuthProbe::Authenticated { .. });
+
+    let (status_str, gh_user, gh_message) = match &probe {
+        GhAuthProbe::Authenticated { user } => (
+            "authenticated",
+            Some(user.clone()),
+            format!("gh authenticated as `{user}`"),
+        ),
+        GhAuthProbe::Unauthenticated => (
+            "unauthenticated",
+            None,
+            "gh is installed but not authenticated — run `gh auth login`".into(),
+        ),
+        GhAuthProbe::NotInstalled => (
+            "gh_missing",
+            None,
+            "gh CLI not on PATH — install from https://cli.github.com, then `gh auth login`".into(),
+        ),
+    };
+
     emit_ok(
         mode,
         json!({
             "backend": "github",
             "needs_signin": false,
-            "message": "self-host mode does not require sign-in",
+            "gh_status": status_str,
+            "gh_user": gh_user,
+            "needs_action": needs_action,
+            "message": gh_message,
         }),
         || {
-            println!("self-host mode does not require sign-in.");
+            println!("self-host mode uses your gh credential — no Knack sign-in needed.");
             println!();
-            println!("github auth is handled by `gh auth login` (already set up if `knack init --self-host` succeeded).");
+            println!("{}", gh_message);
+            if needs_action {
+                println!("once gh is set up, knack publish/run/mark will work.");
+            }
+            println!();
             println!(
                 "to switch to Knack Cloud, run `knack init --cloud` and then `knack auth login`."
             );
         },
     );
     Ok(())
+}
+
+enum GhAuthProbe {
+    Authenticated { user: String },
+    Unauthenticated,
+    NotInstalled,
+}
+
+fn probe_gh_auth() -> GhAuthProbe {
+    match std::process::Command::new("gh")
+        .args(["api", "user", "--jq", ".login"])
+        .output()
+    {
+        Ok(o) if o.status.success() => {
+            let user = String::from_utf8_lossy(&o.stdout).trim().to_string();
+            if user.is_empty() {
+                GhAuthProbe::Unauthenticated
+            } else {
+                GhAuthProbe::Authenticated { user }
+            }
+        }
+        Ok(_) => GhAuthProbe::Unauthenticated,
+        Err(_) => GhAuthProbe::NotInstalled,
+    }
 }
 
 fn github_refresh_noop(mode: OutputMode) -> CliResult<()> {
@@ -233,6 +301,7 @@ async fn finalize_login_to_pat(
     access_jwt: &str,
     label: Option<&str>,
     expires_in_days: Option<i64>,
+    never_expires: bool,
 ) -> Result<(api_auth::CreateCliTokenResponse, api_auth::Me), CliError> {
     // Use the JWT as a one-shot bearer to mint the PAT. The JWT itself
     // is never persisted; we discard it as soon as the PAT lands.
@@ -241,7 +310,21 @@ async fn finalize_login_to_pat(
     let owned_label = label
         .map(str::to_owned)
         .unwrap_or_else(|| format!("knack-cli@{}", host_label()));
-    let pat = api_auth::create_cli_token(&jwt_client, &owned_label, expires_in_days).await?;
+    // Apply the CLI's 90-day default when the caller passed neither
+    // --expires-in-days nor --never-expires. The server has its own
+    // default (365d) but the CLI tightens it for typical interactive use.
+    let effective_expires = if never_expires {
+        None
+    } else {
+        Some(expires_in_days.unwrap_or(DEFAULT_PAT_TTL_DAYS))
+    };
+    let pat = api_auth::create_cli_token(
+        &jwt_client,
+        &owned_label,
+        effective_expires,
+        never_expires,
+    )
+    .await?;
 
     // Identify the user via /auth/me with the same JWT so we can cache
     // user_id + email alongside the PAT. Best-effort — if /me fails the
@@ -331,6 +414,7 @@ async fn login_poll(
             &access,
             args.label.as_deref(),
             args.expires_in_days,
+            args.never_expires,
         )
         .await
         {
@@ -448,6 +532,7 @@ async fn login(args: LoginArgs, client: ApiClient, mode: OutputMode) -> CliResul
                     &access,
                     args.label.as_deref(),
                     args.expires_in_days,
+                    args.never_expires,
                 )
                 .await
                 {

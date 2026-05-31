@@ -44,8 +44,13 @@ irm https://getknack.ai/install.ps1 | iex
 ## Two modes, one CLI
 
 **Self-host (GitHub).** Skills live in a private GitHub repo under your
-account. No third-party account, no telemetry leaves your machine, no
-caps, no server. Publishing is a git commit, a per-skill tag, and a push.
+account. No Knack account, no Knack server, no telemetry leaves your
+machine, no caps. Publishing is a git commit, a per-skill tag, and a push.
+
+Prereqs: `git` on PATH, [GitHub CLI](https://cli.github.com) on PATH, and
+`gh auth login` already run. `knack init --self-host` shells out to `gh`
+to create the repo and to `git` to commit/push; it will not authenticate
+either tool for you.
 
 ```bash
 knack init --self-host --github-repo <you>/<your-skills-repo>
@@ -66,9 +71,9 @@ re-running it.
 
 ## The iteration loop
 
-1. Author. `knack create my-skill` scaffolds. Your agent runs the 6-phase
-   interview, filling in `SKILL.md` (procedure plus the `## Intuition`
-   subsections) and `examples/`.
+1. Author. `knack create my-skill` scaffolds. Your agent runs the four-phase
+   interview (Genesis, Artifacts, Intuition, Dry Run), filling in `SKILL.md`
+   (procedure plus the `## Intuition` subsections) and `examples/`.
 2. Validate. `knack validate my-skill` catches schema mistakes locally
    before you burn a version number.
 3. Publish. `knack publish my-skill` bumps the version, commits, tags,
@@ -176,7 +181,7 @@ Operating surface, when you're driving the CLI on a user's behalf:
   older cloud versions may also ship a sidecar `intuition.md`; the
   pull/publish path tolerates it for back-compat but new authoring
   does not produce one.)
-- The 6-phase interview skill is embedded in the binary. Start it with
+- The four-phase interview skill is embedded in the binary. Start it with
   `knack interview start`. The CLI writes the skill into
   `<cwd>/.claude/skills/knack-interview/` and returns a session id you pass
   to subsequent `knack interview save / advance` calls.

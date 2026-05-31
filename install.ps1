@@ -91,4 +91,5 @@ try {
 
 Write-Host ""
 Write-Host "Next: run 'knack init' to pick self-host (GitHub) or Knack Cloud."
+Write-Host "  Self-host prereqs: git + gh CLI on PATH, with 'gh auth login' done."
 Write-Host "To uninstall later: iwr https://knack.ai/uninstall.ps1 | iex"

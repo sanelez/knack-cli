@@ -233,16 +233,19 @@ fn git_signature(repo: &Repository, fallback_owner: &str) -> BackendResult<Signa
 }
 
 fn push_via_git_cli(local_path: &Path) -> BackendResult<()> {
+    let target = crate::git::resolve_remote(local_path);
     let output = Command::new("git")
         .arg("-C")
         .arg(local_path)
-        .args(["push", "--follow-tags", "origin", "main"])
+        .args(["push", "--follow-tags", &target.remote, &target.branch])
         .output()
         .map_err(|e| BackendError::Network(format!("invoke git: {e}")))?;
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
         return Err(BackendError::Network(format!(
-            "git push: {}",
+            "git push {} {}: {}",
+            target.remote,
+            target.branch,
             stderr.trim()
         )));
     }

@@ -23,3 +23,6 @@ git2.workspace = true
 dirs.workspace = true
 tracing.workspace = true
 uuid.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

@@ -227,6 +227,7 @@ async fn cloud_list(
         marked_by: None,
         since: Some(naive_to_utc(since, false)),
         until: Some(naive_to_utc(until, true)),
+        note_contains: args.note_contains.clone(),
         limit: Some(args.limit),
         cursor: args.cursor.clone(),
     };
@@ -238,8 +239,9 @@ async fn cloud_list(
         }
     };
 
-    let needle = args.note_contains.as_deref().map(|s| s.to_lowercase());
-
+    // note_contains is enforced server-side via the query param above; agent
+    // and version filters still happen client-side because the server route
+    // doesn't accept them (skill_version_id is opaque to the agent).
     let items: Vec<_> = page
         .items
         .into_iter()
@@ -249,14 +251,6 @@ async fn cloud_list(
         })
         .filter(|r| match &version_filter_id {
             Some(vid) => r.skill_version_id == *vid,
-            None => true,
-        })
-        .filter(|r| match &needle {
-            Some(n) => r
-                .marks
-                .iter()
-                .filter_map(|m| m.get("note").and_then(|v| v.as_str()))
-                .any(|note| note.to_lowercase().contains(n)),
             None => true,
         })
         .collect();
