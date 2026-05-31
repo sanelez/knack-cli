@@ -89,6 +89,10 @@ struct CreateCliTokenRequest<'a> {
     expires_in_days: Option<i64>,
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     never_expire: bool,
+    /// Capability list. `["full"]` (default) reproduces all pre-scopes
+    /// behavior; `["read"]` mints a token denied at write routes.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    scopes: Vec<String>,
 }
 
 /// Response from `POST /me/cli-tokens`. Contains the plaintext token —
@@ -103,6 +107,8 @@ pub struct CreateCliTokenResponse {
     pub created_at: chrono::DateTime<chrono::Utc>,
     #[serde(default)]
     pub expires_at: Option<chrono::DateTime<chrono::Utc>>,
+    #[serde(default)]
+    pub scopes: Vec<String>,
 }
 
 /// Mint a long-lived Personal Access Token bound to the caller's user.
@@ -114,11 +120,13 @@ pub async fn create_cli_token(
     name: &str,
     expires_in_days: Option<i64>,
     never_expire: bool,
+    scopes: Vec<String>,
 ) -> Result<CreateCliTokenResponse, CliError> {
     let body = serde_json::to_value(&CreateCliTokenRequest {
         name,
         expires_in_days,
         never_expire,
+        scopes,
     })?;
     client
         .send_json::<CreateCliTokenResponse>(|c| {

@@ -66,6 +66,25 @@ pub async fn get(client: &ApiClient, team_id: &str) -> Result<Team, CliError> {
         .await
 }
 
+/// Resolve a team by either its UUID or its slug.
+///
+/// CLI inputs look like `--team acme-refunds` (slug) or `--team
+/// 5cd5...e973dd` (id). UUID-shaped inputs hit `get()` directly; slug
+/// inputs walk `list_my()` and match locally. NOT_FOUND with a friendly
+/// message when the slug doesn't match any team the caller belongs to.
+pub async fn resolve(client: &ApiClient, name_or_id: &str) -> Result<Team, CliError> {
+    let looks_like_uuid = name_or_id.len() == 36
+        && name_or_id.chars().filter(|c| *c == '-').count() == 4;
+    if looks_like_uuid {
+        return get(client, name_or_id).await;
+    }
+    let teams = list_my(client).await?;
+    teams
+        .into_iter()
+        .find(|t| t.slug == name_or_id || t.name == name_or_id)
+        .ok_or_else(|| CliError::NotFound(format!("team `{name_or_id}` not found")))
+}
+
 pub async fn invite(
     client: &ApiClient,
     team_id: &str,

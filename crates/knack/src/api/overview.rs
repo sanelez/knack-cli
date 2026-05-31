@@ -15,6 +15,9 @@ pub struct OverviewQuery {
     pub since: Option<DateTime<Utc>>,
     pub until: Option<DateTime<Utc>>,
     pub min_runs: u64,
+    /// Server-side filter: only return skills owned by this team. The
+    /// caller must be a member of the team or the server 403s.
+    pub team_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -68,6 +71,9 @@ pub async fn get_overview(
             }
             if let Some(u) = &q.until {
                 rb = rb.query(&[("until", u.to_rfc3339())]);
+            }
+            if let Some(tid) = &q.team_id {
+                rb = rb.query(&[("team_id", tid.as_str())]);
             }
             Ok(rb)
         })

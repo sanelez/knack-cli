@@ -60,6 +60,14 @@ pub struct OverviewArgs {
     /// whether to act on it).
     #[arg(long, default_value_t = 0)]
     pub min_runs: u64,
+
+    /// Cloud only: scope to one team's library (slug or UUID). When set,
+    /// personal-scope skills are excluded from the result. 403 server-
+    /// side if the caller isn't a member of that team. Resolves a team
+    /// slug to its id via the existing teams API before the overview
+    /// call so a typo fails loudly with a friendly error.
+    #[arg(long)]
+    pub team: Option<String>,
 }
 
 pub async fn run(args: OverviewArgs, client: ApiClient, mode: OutputMode) -> CliResult<()> {
@@ -77,9 +85,18 @@ pub async fn run(args: OverviewArgs, client: ApiClient, mode: OutputMode) -> Cli
     };
 
     if let BackendMode::Github { local_path, .. } = &client.config.backend {
+        if args.team.is_some() {
+            let err = CliError::User {
+                code: "TEAM_FILTER_CLOUD_ONLY".into(),
+                message: "--team is a cloud-only filter; self-host clones are single-owner".into(),
+                hint: Some("drop --team for self-host overview".into()),
+            };
+            emit_err(mode, &err);
+            return Err(err);
+        }
         return github_overview(local_path, since, until, args.min_runs, mode);
     }
-    cloud_overview(client, since, until, args.min_runs, mode).await
+    cloud_overview(client, since, until, args.min_runs, args.team.clone(), mode).await
 }
 
 fn list_local_skills(clone_root: &std::path::Path) -> Vec<String> {
@@ -145,12 +162,28 @@ async fn cloud_overview(
     since: NaiveDate,
     until: NaiveDate,
     min_runs: u64,
+    team: Option<String>,
     mode: OutputMode,
 ) -> CliResult<()> {
+    // Resolve the --team value to a team id BEFORE the overview call so a
+    // typo fails loudly with NOT_FOUND, not silently with an empty result.
+    // Accept either a slug or a UUID; the resolver short-circuits when the
+    // input is already a uuid-shaped string.
+    let team_id = match &team {
+        Some(t) => match crate::api::teams::resolve(&client, t).await {
+            Ok(team) => Some(team.id),
+            Err(e) => {
+                emit_err(mode, &e);
+                return Err(e);
+            }
+        },
+        None => None,
+    };
     let q = crate::api::overview::OverviewQuery {
         since: Some(naive_to_utc(since, false)),
         until: Some(naive_to_utc(until, true)),
         min_runs,
+        team_id,
     };
     let resp = match crate::api::overview::get_overview(&client, &q).await {
         Ok(r) => r,

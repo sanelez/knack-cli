@@ -67,6 +67,15 @@ pub struct LoginArgs {
     /// impractical and the token lives in a vault.
     #[arg(long)]
     pub never_expires: bool,
+
+    /// Capability scope for this PAT. `full` (default) reproduces every
+    /// pre-scopes behavior. `read` mints a token that's denied on every
+    /// write route — useful for CI that needs to read run telemetry,
+    /// stats, or pull skills without write rights. Read-scoped PATs can
+    /// still call `knack mark` (verdict on existing work) and post
+    /// feedback (user speech), per the server-side allowlist.
+    #[arg(long, value_parser = ["full", "read"], default_value = "full")]
+    pub scope: String,
 }
 
 /// Default PAT TTL in days. A leaked `~/.knack/auth.json` shouldn't be
@@ -302,6 +311,7 @@ async fn finalize_login_to_pat(
     label: Option<&str>,
     expires_in_days: Option<i64>,
     never_expires: bool,
+    scope: &str,
 ) -> Result<(api_auth::CreateCliTokenResponse, api_auth::Me), CliError> {
     // Use the JWT as a one-shot bearer to mint the PAT. The JWT itself
     // is never persisted; we discard it as soon as the PAT lands.
@@ -318,11 +328,20 @@ async fn finalize_login_to_pat(
     } else {
         Some(expires_in_days.unwrap_or(DEFAULT_PAT_TTL_DAYS))
     };
+    // Scope `"full"` is the server default. Omit it from the wire payload
+    // (which skips emission entirely when the Vec is empty) so older
+    // server versions that don't know about scopes keep working.
+    let scopes: Vec<String> = if scope == "full" {
+        Vec::new()
+    } else {
+        vec![scope.to_string()]
+    };
     let pat = api_auth::create_cli_token(
         &jwt_client,
         &owned_label,
         effective_expires,
         never_expires,
+        scopes,
     )
     .await?;
 
@@ -415,6 +434,7 @@ async fn login_poll(
             args.label.as_deref(),
             args.expires_in_days,
             args.never_expires,
+            &args.scope,
         )
         .await
         {
@@ -533,6 +553,7 @@ async fn login(args: LoginArgs, client: ApiClient, mode: OutputMode) -> CliResul
                     args.label.as_deref(),
                     args.expires_in_days,
                     args.never_expires,
+                    &args.scope,
                 )
                 .await
                 {
