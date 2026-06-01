@@ -11,9 +11,9 @@ use std::path::PathBuf;
 use clap::Args;
 use serde_json::json;
 
-use crate::errors::{CliError, CliResult};
-use crate::output::{emit_err, emit_ok, OutputMode};
-use crate::skill_validators::validate_skill_folder;
+use crate::errors::CliResult;
+use crate::output::{emit_ok, OutputMode};
+use crate::skill_validators::{emit_format_invalid, validate_skill_folder};
 
 #[derive(Debug, Args)]
 pub struct ValidateArgs {
@@ -34,27 +34,5 @@ pub fn run(args: ValidateArgs, mode: OutputMode) -> CliResult<()> {
         );
         return Ok(());
     }
-    let err = CliError::User {
-        code: "SKILL_FORMAT_INVALID".into(),
-        message: format!("skill validation failed. issues: {}", report.summary()),
-        hint: Some("fix the listed fields in meta.knack.yaml / SKILL.md and re-run".into()),
-    };
-    // Use a manual envelope so we can attach the structured `details.issues`
-    // payload (the standard `emit_err` doesn't accept arbitrary details).
-    if mode.json {
-        let env = json!({
-            "$schema": "knack://cli/v1",
-            "ok": false,
-            "error": {
-                "code": "SKILL_FORMAT_INVALID",
-                "message": err.to_string(),
-                "details": report.into_details(),
-                "hint": "fix the listed fields in meta.knack.yaml / SKILL.md and re-run",
-            },
-        });
-        println!("{env}");
-    } else {
-        emit_err(mode, &err);
-    }
-    Err(err)
+    Err(emit_format_invalid(mode, report))
 }

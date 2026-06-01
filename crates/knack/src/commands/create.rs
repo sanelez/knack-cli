@@ -132,7 +132,7 @@ pub async fn run(args: CreateArgs, client: ApiClient, mode: OutputMode) -> CliRe
             .description
             .clone()
             .unwrap_or_else(|| format!("{} — describe what it does in one line.", args.name));
-        if let Err(e) = write_scaffold(&dir, &skill.id, &args.slug, &args.name, &desc, &me.email) {
+        if let Err(e) = write_scaffold(&dir, &args.slug, &args.name, &desc, &me.email) {
             emit_err(mode, &e);
             return Err(e);
         }
@@ -177,7 +177,6 @@ pub async fn run(args: CreateArgs, client: ApiClient, mode: OutputMode) -> CliRe
 /// layout so `knack validate` + `knack publish --from` work immediately.
 fn write_scaffold(
     dir: &Path,
-    skill_id: &str,
     slug: &str,
     name: &str,
     description: &str,
@@ -199,7 +198,7 @@ fn write_scaffold(
     std::fs::create_dir_all(dir.join("examples")).map_err(io)?;
 
     let skill_md = render_skill_md(name, description);
-    let meta_yaml = render_meta_yaml(skill_id, name, slug, author_email);
+    let meta_yaml = render_meta_yaml(name, slug, author_email);
     let examples_readme = render_examples_readme();
 
     // Intuition is a section INSIDE SKILL.md, not a separate file. Skills
@@ -234,12 +233,17 @@ fn render_skill_md(name: &str, description: &str) -> String {
     )
 }
 
-fn render_meta_yaml(skill_id: &str, name: &str, slug: &str, author: &str) -> String {
-    // Hand-written — meta.knack.yaml is short (~4 lines) so a yaml library
+fn render_meta_yaml(name: &str, slug: &str, author: &str) -> String {
+    // Hand-written — meta.knack.yaml is short (~3 lines) so a yaml library
     // would be overkill here. Quote the name to be safe against colons.
+    //
+    // No `id` field. The cloud `skills.id` row (or, for self-host, the
+    // directory layout under `skills/<slug>/`) is the source of truth
+    // for skill identity. Embedding a UUID here would diverge from the
+    // server's canonical id and trip the META_MISMATCH gate on publish;
+    // the github scaffold already omits it and this matches.
     format!(
-        "id: {skill_id}\n\
-         name: \"{name}\"\n\
+        "name: \"{name}\"\n\
          slug: {slug}\n\
          author: {author}\n"
     )
@@ -380,7 +384,6 @@ mod tests {
         let dir = tmp.path().join("skill");
         write_scaffold(
             &dir,
-            "skill-id-abc",
             "humanizetext",
             "Humanize Text",
             "Rewrite AI prose",
@@ -395,8 +398,11 @@ mod tests {
         assert!(dir.join("examples").join("README.md").exists());
 
         let meta = std::fs::read_to_string(dir.join("meta.knack.yaml")).unwrap();
-        // Four required MetaKnack fields all present.
-        assert!(meta.contains("id: skill-id-abc"));
+        // Required MetaKnack identity fields all present. `id` is NOT
+        // scaffolded — the server is the source of truth for skill
+        // identity; a hard-coded id here would diverge from the cloud
+        // UUID and trip the META_MISMATCH gate on publish.
+        assert!(!meta.contains("id:"), "scaffold leaked an `id` field");
         assert!(meta.contains("name: \"Humanize Text\""));
         assert!(meta.contains("slug: humanizetext"));
         assert!(meta.contains("author: user@example.com"));
@@ -414,7 +420,7 @@ mod tests {
         let dir = tmp.path().join("skill");
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("existing.txt"), "stuff").unwrap();
-        let err = write_scaffold(&dir, "id", "slug", "Name", "desc", "u@example.com").unwrap_err();
+        let err = write_scaffold(&dir, "slug", "Name", "desc", "u@example.com").unwrap_err();
         match err {
             CliError::User { code, .. } => assert_eq!(code, "CREATE_SCAFFOLD_DIR_NOT_EMPTY"),
             other => panic!("expected User error, got {other:?}"),

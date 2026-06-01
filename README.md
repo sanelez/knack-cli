@@ -18,7 +18,7 @@ skills/email-triage/
 ├── SKILL.md            # the playbook the agent loads — includes a `## Intuition`
 │                       # section with `### Always` / `### Except when` /
 │                       # `### Edge cases` subsections that hold every rule
-├── meta.knack.yaml     # id, name, slug, author, version, description
+├── meta.knack.yaml     # name, slug, author, version, description
 ├── examples/           # input/output pairs from real past work
 ├── scripts/            # optional helper scripts
 ├── assets/             # optional static files
@@ -200,7 +200,7 @@ Operating surface, when you're driving the CLI on a user's behalf:
 - Skill folders are at `<workspace>/skills/<slug>/`. Required:
   `SKILL.md` (with frontmatter `name`, `description`; rules live inside
   under `## Intuition` with `### Always` / `### Except when` /
-  `### Edge cases` subsections) and `meta.knack.yaml` (with `id`,
+  `### Edge cases` subsections) and `meta.knack.yaml` (with
   `name`, `slug`, `author`, `version`). Optional: `examples/`,
   `scripts/`, `assets/`, `references/`, `tests/`. (Skills pulled from
   older cloud versions may also ship a sidecar `intuition.md`; the

@@ -94,6 +94,17 @@ pub async fn run(args: PublishArgs, client: ApiClient, mode: OutputMode) -> CliR
         return dry_run(&args, &dir, mode);
     }
 
+    // Pre-flight format validation for the cloud main path. dry_run
+    // validates locally too, but the non-dry-run path used to go
+    // straight to the API — a malformed local skill would burn a
+    // network round-trip and surface as a server-side
+    // SKILL_FORMAT_INVALID. Catching it here is faster and gives the
+    // same envelope shape.
+    let report = crate::skill_validators::validate_skill_folder(&dir);
+    if !report.is_ok() {
+        return Err(crate::skill_validators::emit_format_invalid(mode, report));
+    }
+
     let skill = match api_skills::find_by_slug(&client, &args.slug).await? {
         Some(s) => s,
         None => {
@@ -230,28 +241,7 @@ enum PublishOutcome {
 fn dry_run(args: &PublishArgs, dir: &Path, mode: OutputMode) -> CliResult<()> {
     let report = crate::skill_validators::validate_skill_folder(dir);
     if !report.is_ok() {
-        let summary = report.summary();
-        let err = CliError::User {
-            code: "SKILL_FORMAT_INVALID".into(),
-            message: format!("skill validation failed. issues: {summary}"),
-            hint: Some("fix the listed fields in meta.knack.yaml / SKILL.md and re-run".into()),
-        };
-        if mode.json {
-            let env = serde_json::json!({
-                "$schema": "knack://cli/v1",
-                "ok": false,
-                "error": {
-                    "code": "SKILL_FORMAT_INVALID",
-                    "message": err.to_string(),
-                    "details": report.into_details(),
-                    "hint": "fix the listed fields in meta.knack.yaml / SKILL.md and re-run",
-                },
-            });
-            println!("{env}");
-        } else {
-            emit_err(mode, &err);
-        }
-        return Err(err);
+        return Err(crate::skill_validators::emit_format_invalid(mode, report));
     }
 
     let packed = match pack_skill(dir) {
@@ -373,6 +363,17 @@ async fn github_publish(
         };
         emit_err(mode, &err);
         return Err(err);
+    }
+
+    // Pre-flight format validation. Before v0.7.12 this path went
+    // straight from "directory exists" to commit/tag/push, so the
+    // self-host loop would happily publish a SKILL.md missing its
+    // frontmatter — the broken artifact would land on origin/main as
+    // an immutable tag. Mirror the cloud route's gate: surface
+    // SKILL_FORMAT_INVALID up front instead of committing garbage.
+    let report = crate::skill_validators::validate_skill_folder(&skill_dir);
+    if !report.is_ok() {
+        return Err(crate::skill_validators::emit_format_invalid(mode, report));
     }
 
     // Resolve next version. Priority: --as-version, then --major/--minor/--patch

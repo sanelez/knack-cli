@@ -19,6 +19,9 @@ use std::path::Path;
 
 use serde_json::{json, Value};
 
+use crate::errors::CliError;
+use crate::output::{emit_err, OutputMode};
+
 #[derive(Debug, Clone)]
 pub struct ValidationIssue {
     pub path: String,
@@ -70,6 +73,41 @@ impl ValidationReport {
             code,
         });
     }
+}
+
+/// Emit the canonical `SKILL_FORMAT_INVALID` envelope for a failed
+/// validation report and return the `CliError` the caller should
+/// propagate. Three call sites need this exact shape (validate,
+/// publish dry-run, publish main paths in both cloud + github), so
+/// the helper saves the manual JSON construction from drifting
+/// between them.
+///
+/// The envelope carries the structured `details.issues` payload the
+/// agent-side `--json` consumer expects; `emit_err` alone doesn't
+/// accept arbitrary `details`, so we hand-render the envelope in JSON
+/// mode and fall back to `emit_err` in human mode.
+pub fn emit_format_invalid(mode: OutputMode, report: ValidationReport) -> CliError {
+    let err = CliError::User {
+        code: "SKILL_FORMAT_INVALID".into(),
+        message: format!("skill validation failed. issues: {}", report.summary()),
+        hint: Some("fix the listed fields in meta.knack.yaml / SKILL.md and re-run".into()),
+    };
+    if mode.json {
+        let env = json!({
+            "$schema": "knack://cli/v1",
+            "ok": false,
+            "error": {
+                "code": "SKILL_FORMAT_INVALID",
+                "message": err.to_string(),
+                "details": report.into_details(),
+                "hint": "fix the listed fields in meta.knack.yaml / SKILL.md and re-run",
+            },
+        });
+        println!("{env}");
+    } else {
+        emit_err(mode, &err);
+    }
+    err
 }
 
 /// Existence-and-non-empty gate for a skill folder. Real schema
