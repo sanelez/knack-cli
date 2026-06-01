@@ -83,6 +83,7 @@ pub async fn run(args: CreateArgs, client: ApiClient, mode: OutputMode) -> CliRe
     let body = api_skills::SkillCreate {
         slug: args.slug.clone(),
         name: args.name.clone(),
+        description: args.description.clone(),
         scope: Some(args.scope.clone()),
         owner_team_id: args.team_id.clone(),
     };

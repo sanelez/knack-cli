@@ -97,6 +97,11 @@ pub struct BundleDownloadResponse {
 pub struct SkillCreate {
     pub slug: String,
     pub name: String,
+    /// One-line discoverability blurb (1-280 chars server-side). Optional
+    /// from the wire; the server defaults to an empty string when missing,
+    /// which the marketplace card renders as a stub.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub scope: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -112,6 +117,12 @@ pub struct SkillVersionCreate {
     pub intuition_md: String,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub meta_yaml: String,
+    /// Optional `tests/basic.yaml` content. The bundle path derives this
+    /// from the tarball; the text-only path requires the CLI to read the
+    /// file and supply it here so server-side persistence isn't silently
+    /// truncated to the three other text fields.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub tests_yaml: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub parent_version_id: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]

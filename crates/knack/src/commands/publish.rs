@@ -151,6 +151,11 @@ pub async fn run(args: PublishArgs, client: ApiClient, mode: OutputMode) -> CliR
             let skill_md = read_required(&dir.join("SKILL.md"))?;
             let intuition_md = read_optional(&dir.join("intuition.md"));
             let meta_yaml = read_optional(&dir.join("meta.knack.yaml"));
+            // The bundle path derives `tests/basic.yaml` from the
+            // uploaded tarball; the legacy text path doesn't upload, so
+            // the CLI has to read the file itself or the server stores
+            // an empty `tests_yaml`.
+            let tests_yaml = read_optional(&dir.join("tests").join("basic.yaml"));
             match api_skills::create_version(
                 &client,
                 &skill.id,
@@ -159,6 +164,7 @@ pub async fn run(args: PublishArgs, client: ApiClient, mode: OutputMode) -> CliR
                     skill_md,
                     intuition_md,
                     meta_yaml,
+                    tests_yaml,
                     parent_version_id: parent_id.clone(),
                     artifact_ids: vec![],
                     packed_s3_key: None,
@@ -325,6 +331,9 @@ async fn try_publish_with_bundle(
             skill_md: String::new(),
             intuition_md: String::new(),
             meta_yaml: String::new(),
+            // Server derives this from the uploaded bundle's
+            // `tests/basic.yaml`; the client doesn't need to duplicate.
+            tests_yaml: String::new(),
             parent_version_id: parent_version_id.map(str::to_string),
             artifact_ids: vec![],
             packed_s3_key: Some(presign.s3_key),

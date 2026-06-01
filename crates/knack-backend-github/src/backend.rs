@@ -403,11 +403,25 @@ fn search_blocking(skills_root: &Path, query_lc: &str) -> BackendResult<Vec<Skil
     let filtered: Vec<SkillSummary> = all
         .into_iter()
         .filter(|s| {
-            s.slug.to_lowercase().contains(query_lc)
-                || s.description
-                    .as_deref()
-                    .map(|d| d.to_lowercase().contains(query_lc))
-                    .unwrap_or(false)
+            if s.slug.to_lowercase().contains(query_lc) {
+                return true;
+            }
+            if s.description
+                .as_deref()
+                .map(|d| d.to_lowercase().contains(query_lc))
+                .unwrap_or(false)
+            {
+                return true;
+            }
+            // Fall through to grepping SKILL.md. The README documents
+            // this surface; without it `knack search "rule about X"`
+            // misses skills whose slug and description don't mention
+            // X but whose body does. Read errors are non-fatal — a
+            // skill folder missing SKILL.md just doesn't match here.
+            let skill_md_path = skills_root.join(&s.slug).join("SKILL.md");
+            fs::read_to_string(&skill_md_path)
+                .map(|body| body.to_lowercase().contains(query_lc))
+                .unwrap_or(false)
         })
         .collect();
     Ok(filtered)
@@ -460,3 +474,84 @@ mod semver_tuple {
 // but earlier drafts did. Strip if it lingers.
 #[allow(dead_code)]
 fn _retain_btreemap_import(_: BTreeMap<String, ()>) {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+    use tempfile::tempdir;
+
+    fn write_skill(root: &Path, slug: &str, description: &str, skill_md_body: &str) {
+        let dir = root.join(slug);
+        fs::create_dir_all(&dir).unwrap();
+        // Minimum-viable `meta.knack.yaml` — `read_summary` only requires
+        // slug (others have sensible fallbacks).
+        let meta = format!(
+            "slug: {slug}\nname: {slug}\nauthor: t@example.com\ndescription: {description}\n"
+        );
+        fs::write(dir.join("meta.knack.yaml"), meta).unwrap();
+        fs::write(dir.join("SKILL.md"), skill_md_body).unwrap();
+    }
+
+    #[test]
+    fn search_matches_skill_md_body_when_slug_and_description_miss() {
+        // The README advertises grep over slug + description + SKILL.md.
+        // Before this fix the implementation only checked the first two,
+        // so a unique phrase in the body was invisible to `knack search`.
+        let dir = tempdir().unwrap();
+        write_skill(
+            dir.path(),
+            "alpha",
+            "totally unrelated",
+            "# Alpha\n\nA particular needle phrase lives here in the body.\n",
+        );
+        write_skill(
+            dir.path(),
+            "beta",
+            "also unrelated",
+            "# Beta\n\nNothing of note.\n",
+        );
+        let results = search_blocking(dir.path(), "needle").unwrap();
+        let slugs: Vec<_> = results.iter().map(|s| s.slug.as_str()).collect();
+        assert_eq!(slugs, vec!["alpha"], "SKILL.md body match should surface alpha");
+    }
+
+    #[test]
+    fn search_still_matches_slug() {
+        // Don't regress the pre-existing slug match.
+        let dir = tempdir().unwrap();
+        write_skill(dir.path(), "needle-skill", "x", "body");
+        let results = search_blocking(dir.path(), "needle").unwrap();
+        assert_eq!(results.len(), 1);
+    }
+
+    #[test]
+    fn search_still_matches_description() {
+        // Don't regress the pre-existing description match.
+        let dir = tempdir().unwrap();
+        write_skill(
+            dir.path(),
+            "x",
+            "this needle is in the description",
+            "body",
+        );
+        let results = search_blocking(dir.path(), "needle").unwrap();
+        assert_eq!(results.len(), 1);
+    }
+
+    #[test]
+    fn search_tolerates_missing_skill_md() {
+        // A skill folder with no SKILL.md just doesn't match on body —
+        // not a fatal error.
+        let dir = tempdir().unwrap();
+        let skill_dir = dir.path().join("orphan");
+        fs::create_dir_all(&skill_dir).unwrap();
+        fs::write(
+            skill_dir.join("meta.knack.yaml"),
+            "slug: orphan\nname: orphan\nauthor: t@example.com\ndescription: anything\n",
+        )
+        .unwrap();
+        let results = search_blocking(dir.path(), "needle").unwrap();
+        assert!(results.is_empty());
+    }
+}
