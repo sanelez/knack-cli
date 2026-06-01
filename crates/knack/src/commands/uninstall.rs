@@ -24,7 +24,6 @@ use crate::auth_store::auth_file_path;
 use crate::commands::install::{installed, strip_shims};
 use crate::errors::CliResult;
 use crate::output::{emit_ok, OutputMode};
-use crate::update_check;
 
 const UNINSTALL_PS1_URL: &str = "https://getknack.ai/uninstall.ps1";
 const UNINSTALL_SH_URL: &str = "https://getknack.ai/uninstall.sh";
@@ -94,7 +93,12 @@ pub async fn run(args: UninstallArgs, client: ApiClient, mode: OutputMode) -> Cl
 
     let mut deleted_files: Vec<String> = Vec::new();
     if !args.print {
-        for path in [installed::record_path(), update_check::cache_path()]
+        // `update-check.json` is a legacy file from pre-v0.7.11 installs; the
+        // update-check module is gone but the orphan file may still be on
+        // disk, so we sweep it here.
+        let legacy_update_cache = dirs::home_dir()
+            .map(|h| h.join(".knack").join("update-check.json"));
+        for path in [installed::record_path(), legacy_update_cache]
             .into_iter()
             .flatten()
         {

@@ -1,10 +1,8 @@
 //! Embedded CLI docs.
 //!
-//! The canonical markdown lives at `apps/api/knack_api/cli_docs/` so the same
-//! source serves the API's `GET /docs/cli` endpoint *and* the binary's
-//! `knack docs` command. We bake them in at compile time via `include_str!` —
-//! no network needed offline, and a stale binary can't drift from a stale
-//! server: the build would have to repackage them.
+//! The canonical markdown lives at `embedded/cli-docs/` and is baked
+//! into the binary at compile time via `include_str!` — no network
+//! needed, no server dependency, no two-mirror drift.
 
 pub struct Topic {
     pub slug: &'static str,

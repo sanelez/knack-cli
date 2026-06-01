@@ -380,18 +380,16 @@ the agent.
 
 ## Discovering the CLI from inside an agent
 
-If your agent doesn't have `knack` installed:
-
-    curl https://api.getknack.ai/docs/cli           # full markdown
-    curl https://api.getknack.ai/docs/cli/index.json # command tree
-
-If `knack` is installed:
+If `knack` is installed, every doc surface lives in the binary:
 
     knack info                  # full agent playbook (agent.txt)
     knack docs                  # all topics
     knack docs commands         # one topic
     knack help --json           # machine-readable command tree
     knack introspect            # every subcommand + flag as JSON
+
+If `knack` is not installed, the install script lives at
+`https://getknack.ai/install.sh` (or `install.ps1` on Windows).
 
 `knack info` is the canonical agent playbook (interview phases, authoring,
 publishing, iteration). It fetches the live copy from getknack.ai and falls

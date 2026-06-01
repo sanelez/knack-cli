@@ -9,7 +9,6 @@
 //! this client.
 
 pub mod auth;
-pub mod cloud;
 pub mod feedback;
 pub mod folders;
 pub mod marketplace;
@@ -18,8 +17,6 @@ pub mod runs;
 pub mod skills;
 pub mod teams;
 pub mod users;
-
-pub use cloud::CloudBackend;
 
 use std::sync::{Arc, OnceLock};
 
