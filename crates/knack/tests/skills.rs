@@ -71,11 +71,15 @@ async fn list_filters_by_scope() {
 
 #[tokio::test]
 async fn find_by_slug_paginates_and_matches() {
-    // Two pages — first has one unrelated skill, second has the target.
+    // `find_by_slug` queries `GET /skills?slug=<slug>&limit=1` and trusts
+    // the server to filter. Two mock arms — one returns the matching
+    // item, the other returns an empty page — pin both branches of the
+    // Option<Skill> return type.
     let (server, client, _store) = common::fixture().await;
 
     Mock::given(method("GET"))
         .and(path("/skills"))
+        .and(query_param("slug", "intake-cleanup"))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({
             "items": [
                 {
@@ -95,8 +99,16 @@ async fn find_by_slug_paginates_and_matches() {
         .mount(&server)
         .await;
 
-    // Should match on the only item (slug == "intake-cleanup"), not the
-    // unrelated query slug.
+    Mock::given(method("GET"))
+        .and(path("/skills"))
+        .and(query_param("slug", "does-not-exist"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "items": [],
+            "next_cursor": null,
+        })))
+        .mount(&server)
+        .await;
+
     let hit = api_skills::find_by_slug(&client, "intake-cleanup")
         .await
         .unwrap();
@@ -141,6 +153,7 @@ async fn create_posts_full_body_and_returns_skill() {
         &api_skills::SkillCreate {
             slug: "month-end-close".into(),
             name: "Month-end close".into(),
+            description: None,
             scope: Some("personal".into()),
             owner_team_id: None,
         },
@@ -171,6 +184,7 @@ async fn create_409_maps_to_conflict() {
         &api_skills::SkillCreate {
             slug: "taken".into(),
             name: "Taken".into(),
+            description: None,
             scope: Some("personal".into()),
             owner_team_id: None,
         },
@@ -217,6 +231,7 @@ async fn create_version_posts_full_body() {
             skill_md: "# v2".into(),
             intuition_md: String::new(),
             meta_yaml: String::new(),
+            tests_yaml: String::new(),
             parent_version_id: None,
             artifact_ids: vec![],
             packed_s3_key: None,

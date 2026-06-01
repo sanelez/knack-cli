@@ -168,9 +168,15 @@ async fn create_cli_token_returns_plaintext() {
         .mount(&server)
         .await;
 
-    let resp = api_auth::create_cli_token(&client, "knack-cli@hostname", None)
-        .await
-        .unwrap();
+    let resp = api_auth::create_cli_token(
+        &client,
+        "knack-cli@hostname",
+        None,
+        false,
+        vec!["full".into()],
+    )
+    .await
+    .unwrap();
     assert_eq!(resp.id, "tok_abc");
     assert!(resp.plaintext.starts_with("knack_pat_"));
     assert_eq!(resp.prefix, "knack_pat_aBcDeF");
