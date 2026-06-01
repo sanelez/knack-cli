@@ -396,7 +396,7 @@ mod tests {
         .unwrap();
         std::fs::write(
             root.join("meta.knack.yaml"),
-            "id: knack_x\nname: x\nslug: x\nauthor: a@b.c\n",
+            "name: x\nslug: x\nauthor: a@b.c\n",
         )
         .unwrap();
     }

@@ -30,6 +30,8 @@ in both modes; the few that don't are flagged below.
 ### Authoring
 
     knack create <slug> --name "..." [--description "..."] [--scope personal|team|public]
+        # --scope / --team-id are cloud only; github mode ignores them
+        # (every github-mode skill lives in the repo's `skills/` root)
     knack validate <slug>
     knack publish <slug> [--from DIR] [--major|--minor|--patch] [--as-version X.Y.Z] [--dry-run]
     knack edit <slug> --name "..." --description "..." --scope ...        # cloud only

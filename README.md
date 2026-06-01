@@ -216,7 +216,8 @@ Operating surface, when you're driving the CLI on a user's behalf:
   repeatable. Pass each file separately.
 - Every command supports `--json`. Stdout is JSON; stderr is chatter.
 - Exit codes are stable: `0` success, `1` user, `2` auth, `3` network,
-  `4` conflict, `5` plan limit, `64` usage, `70` internal. See
+  `4` conflict, `5` plan limit, `6` partial failure (bulk op — some
+  items succeeded, some didn't), `64` usage, `70` internal. See
   `knack docs exit-codes` for the full list.
 - The canonical agent playbook is `knack info`. It fetches
   `getknack.ai/agent.txt` and falls back to the embedded copy on offline.

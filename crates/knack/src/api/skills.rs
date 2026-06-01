@@ -122,10 +122,12 @@ pub struct SkillVersionCreate {
     pub intuition_md: String,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub meta_yaml: String,
-    /// Optional `tests/basic.yaml` content. The bundle path derives this
-    /// from the tarball; the text-only path requires the CLI to read the
-    /// file and supply it here so server-side persistence isn't silently
-    /// truncated to the three other text fields.
+    /// Optional `tests/basic.yaml` content. Only meaningful on the
+    /// legacy text-only path; ignored when `packed_s3_key` is set
+    /// (the server derives tests_yaml from the uploaded tarball, and
+    /// any body value here would 409 on the disagree-with-bundle gate).
+    /// `skip_serializing_if = "String::is_empty"` keeps the bundle path
+    /// from sending a spurious empty string on the wire.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub tests_yaml: String,
     #[serde(skip_serializing_if = "Option::is_none")]

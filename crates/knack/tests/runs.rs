@@ -149,7 +149,7 @@ async fn mark_404_when_run_unknown() {
     )
     .await
     .unwrap_err();
-    matches!(err, CliError::NotFound(_));
+    assert!(matches!(err, CliError::NotFound(_)), "got {err:?}");
 }
 
 // === Phase B/D additions: list_for_skill + get_stats =======================

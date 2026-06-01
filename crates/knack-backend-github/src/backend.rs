@@ -6,7 +6,6 @@ use knack_types::{
     SkillPackage, SkillSource, SkillSummary,
 };
 use serde::Deserialize;
-use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -469,11 +468,6 @@ mod semver_tuple {
         Some(SemVerTuple(major, minor, patch))
     }
 }
-
-// Keep the unused-import warning at bay; we don't `use BTreeMap` anywhere
-// but earlier drafts did. Strip if it lingers.
-#[allow(dead_code)]
-fn _retain_btreemap_import(_: BTreeMap<String, ()>) {}
 
 #[cfg(test)]
 mod tests {

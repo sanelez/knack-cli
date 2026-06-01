@@ -25,17 +25,17 @@ mod common;
 // These numbers are documented in `knack docs exit-codes` and consumed by
 // CI scripts users have written against them. Re-numbering breaks every
 // downstream consumer silently — at minimum, exit 6 (partial) was added
-// in v0.7.10 and is now load-bearing for bulk-mark + future bulk-export.
+// and is now load-bearing for bulk-mark + future bulk-export.
 
 #[test]
-fn exit_codes_pin_v0_7_10_table() {
+fn exit_codes_pin_v0_7_x_table() {
     assert_eq!(ExitCode::SUCCESS.0, 0);
     assert_eq!(ExitCode::USER.0, 1);
     assert_eq!(ExitCode::AUTH.0, 2);
     assert_eq!(ExitCode::NETWORK.0, 3);
     assert_eq!(ExitCode::CONFLICT.0, 4);
     assert_eq!(ExitCode::PLAN.0, 5);
-    assert_eq!(ExitCode::PARTIAL.0, 6, "exit 6 is the bulk-mark partial-failure signal added in v0.7.10");
+    assert_eq!(ExitCode::PARTIAL.0, 6, "exit 6 is the bulk-mark partial-failure signal");
     assert_eq!(ExitCode::USAGE.0, 64);
     assert_eq!(ExitCode::INTERNAL.0, 70);
 }

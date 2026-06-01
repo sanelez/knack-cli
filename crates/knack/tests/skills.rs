@@ -165,6 +165,56 @@ async fn create_posts_full_body_and_returns_skill() {
 }
 
 #[tokio::test]
+async fn create_propagates_description_on_wire() {
+    // The v0.7.11 fix wired `description` through to the cloud
+    // request body, but the existing `create_posts_full_body` mock
+    // doesn't assert it — so if the CLI silently dropped the field
+    // again, the test would still pass. This mock fails closed: the
+    // match requires `description` to be on the wire.
+    use wiremock::matchers::body_partial_json;
+
+    let (server, client, _store) = common::fixture().await;
+
+    Mock::given(method("POST"))
+        .and(path("/skills"))
+        .and(body_partial_json(json!({
+            "slug": "with-desc",
+            "name": "With Description",
+            "description": "rewrites AI text to sound human",
+            "scope": "personal",
+        })))
+        .respond_with(ResponseTemplate::new(201).set_body_json(json!({
+            "id": "00000000-0000-0000-0000-0000000000bb",
+            "slug": "with-desc",
+            "name": "With Description",
+            "scope": "personal",
+            "owner_user_id": "u1",
+            "owner_team_id": null,
+            "current_version_id": null,
+            "current_version_semver": null,
+            "created_at": "2026-06-01T00:00:00Z",
+        })))
+        .mount(&server)
+        .await;
+
+    let skill = api_skills::create(
+        &client,
+        &api_skills::SkillCreate {
+            slug: "with-desc".into(),
+            name: "With Description".into(),
+            description: Some("rewrites AI text to sound human".into()),
+            scope: Some("personal".into()),
+            owner_team_id: None,
+        },
+    )
+    .await
+    .unwrap();
+    // If the description hadn't been serialized, the mock above
+    // wouldn't have matched and the create would have errored.
+    assert_eq!(skill.slug, "with-desc");
+}
+
+#[tokio::test]
 async fn create_409_maps_to_conflict() {
     use knack_cli::errors::CliError;
 
@@ -191,7 +241,7 @@ async fn create_409_maps_to_conflict() {
     )
     .await
     .unwrap_err();
-    matches!(err, CliError::Conflict { .. });
+    assert!(matches!(err, CliError::Conflict { .. }), "got {err:?}");
 }
 
 #[tokio::test]
@@ -261,7 +311,7 @@ async fn get_version_404_maps_to_not_found() {
     let err = api_skills::get_version(&client, "sk1", "9.9.9")
         .await
         .unwrap_err();
-    matches!(err, CliError::NotFound(_));
+    assert!(matches!(err, CliError::NotFound(_)), "got {err:?}");
 }
 
 #[tokio::test]

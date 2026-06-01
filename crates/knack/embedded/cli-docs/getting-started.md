@@ -2,11 +2,11 @@
 
 macOS / Linux:
 
-    curl -fsSL https://knack.ai/install | sh
+    curl -fsSL https://getknack.ai/install | sh
 
 Windows (PowerShell):
 
-    irm https://knack.ai/install.ps1 | iex
+    irm https://getknack.ai/install.ps1 | iex
 
 Verify:
 
