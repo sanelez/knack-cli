@@ -10,8 +10,10 @@
 //!   2. `git symbolic-ref refs/remotes/<remote>/HEAD` for the default branch
 //!   3. Hardcoded `origin/main` fallback (with a one-time stderr warning)
 
-use std::path::Path;
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::{OnceLock, RwLock};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RemoteTarget {
@@ -28,13 +30,52 @@ impl RemoteTarget {
     }
 }
 
+/// Process-wide memoization cache for the resolver. The remote/branch
+/// tuple for a given workspace is immutable for the process lifetime —
+/// the user isn't going to swap `origin` and `master` mid-invocation —
+/// so we resolve once and serve every subsequent call from memory.
+/// Without this cache, `knack run` and `knack mark` paid 2-4 subprocess
+/// spawns each (git remote + git symbolic-ref + maybe gh repo view +
+/// maybe git remote get-url). On Windows where CreateProcess is ~30 ms
+/// that's ~120 ms of pure overhead per telemetry event.
+fn cache() -> &'static RwLock<HashMap<PathBuf, RemoteTarget>> {
+    static CACHE: OnceLock<RwLock<HashMap<PathBuf, RemoteTarget>>> = OnceLock::new();
+    CACHE.get_or_init(|| RwLock::new(HashMap::new()))
+}
+
 /// Best-effort resolver. Never errors out the caller — falls back to
 /// `origin/main` if every probe fails so a misconfigured repo doesn't
-/// strand telemetry that already landed on disk.
+/// strand telemetry that already landed on disk. Memoized per
+/// `repo` path: subsequent calls in the same process serve from cache.
 pub fn resolve_remote(repo: &Path) -> RemoteTarget {
+    let key = repo.to_path_buf();
+
+    // Fast path: read the cache.
+    if let Some(hit) = cache().read().ok().and_then(|c| c.get(&key).cloned()) {
+        return hit;
+    }
+
+    // Slow path: shell out to git/gh.
     let remote = resolve_remote_name(repo);
     let branch = resolve_default_branch(repo, &remote);
-    RemoteTarget { remote, branch }
+    let target = RemoteTarget { remote, branch };
+
+    // Insert into the cache. Tolerate a poisoned lock — we'd rather
+    // pay the resolve cost again than panic the telemetry path.
+    if let Ok(mut guard) = cache().write() {
+        guard.insert(key, target.clone());
+    }
+    target
+}
+
+/// Clear the in-process memoization cache. Test-only — exposed so the
+/// per-test asserts on subprocess-spawn-count can start from a clean
+/// slate even when `cargo test --test-threads=1` reuses the process.
+#[cfg(test)]
+pub fn clear_cache_for_tests() {
+    if let Ok(mut guard) = cache().write() {
+        guard.clear();
+    }
 }
 
 fn resolve_remote_name(repo: &Path) -> String {

@@ -197,7 +197,13 @@ fn github_run(args: &RunArgs, local_path: &std::path::Path, mode: OutputMode) ->
     let agent_tag = args.runtime.clone().or_else(|| Some("agent".to_string()));
     let inputs: Vec<String> = args.input.iter().map(|p| p.display().to_string()).collect();
 
-    let push = resolve_push_flag(local_path, args.no_push);
+    let push = match resolve_push_flag(local_path, args.no_push) {
+        Ok(p) => p,
+        Err(e) => {
+            emit_err(mode, &e);
+            return Err(e);
+        }
+    };
     let run_id = match knack_backend_github::start_run(
         local_path,
         slug,
@@ -244,23 +250,27 @@ fn github_run(args: &RunArgs, local_path: &std::path::Path, mode: OutputMode) ->
     Ok(())
 }
 
-/// Resolve the effective `push` flag for self-host telemetry.
-///
-/// Precedence (most-specific wins):
-/// 1. `--no-push` on the CLI invocation → false
-/// 2. Workspace `knack.yaml` `auto_push: false` → false
-/// 3. Default → true
-///
-/// `KNACK_AUTO_PUSH=0` is enforced inside `commit_and_push_event` itself so
-/// it overrides everything, including a workspace that opted in.
-pub(super) fn resolve_push_flag(repo: &std::path::Path, cli_no_push: bool) -> bool {
-    if cli_no_push {
-        return false;
-    }
-    match knack_backend_github::read_workspace_auto_push(repo) {
-        Ok(Some(false)) => false,
-        _ => true,
-    }
+/// Resolve the effective `push` flag for self-host telemetry. Thin
+/// wrapper around `workspace::PushPolicy::resolve` that surfaces a
+/// malformed knack.yaml as a CLI-level error instead of silently
+/// defaulting to push-on (the pre-v0.7.10 behavior). The single source
+/// of truth for precedence lives in the backend crate.
+pub(super) fn resolve_push_flag(
+    repo: &std::path::Path,
+    cli_no_push: bool,
+) -> Result<bool, CliError> {
+    knack_backend_github::PushPolicy::resolve(cli_no_push, repo)
+        .map(|p| p.should_push())
+        .map_err(|e| CliError::User {
+            code: "WORKSPACE_CONFIG_INVALID".into(),
+            message: format!(
+                "could not read auto_push from <repo>/knack.yaml: {e}"
+            ),
+            hint: Some(
+                "edit knack.yaml to fix the YAML, or remove the file to fall back to defaults"
+                    .into(),
+            ),
+        })
 }
 
 fn read_meta_version(skill_dir: &std::path::Path) -> Result<String, std::io::Error> {

@@ -278,6 +278,12 @@ pub fn find_run(repo: &Path, run_id: &str) -> Result<Option<RunSnapshot>> {
 
     // Slow path: walk every month directory under runs/ so a mark after
     // the fast-path window still resolves its parent.
+    //
+    // Validate every directory and file name against the canonical
+    // `YYYY-MM/` and `YYYY-MM-DD.jsonl` shapes before opening. Without
+    // this gate the slow path would walk `runs/archive/`, `.DS_Store`,
+    // `runs/scratch/*.jsonl.bak`, etc. — both wasted I/O and a quiet
+    // privacy leak if a user parked unrelated content under runs/.
     let month_dirs = std::fs::read_dir(&runs_root)
         .with_context(|| format!("read {}", runs_root.display()))?;
     for entry in month_dirs {
@@ -287,6 +293,10 @@ pub fn find_run(repo: &Path, run_id: &str) -> Result<Option<RunSnapshot>> {
         };
         let path = entry.path();
         if !path.is_dir() {
+            continue;
+        }
+        // Month dir must be exactly `YYYY-MM`.
+        if !is_valid_month_dir_name(&entry.file_name()) {
             continue;
         }
         let day_files = match std::fs::read_dir(&path) {
@@ -302,6 +312,10 @@ pub fn find_run(repo: &Path, run_id: &str) -> Result<Option<RunSnapshot>> {
             if !day_path.is_file() {
                 continue;
             }
+            // Day file must be exactly `YYYY-MM-DD.jsonl`.
+            if !is_valid_day_file_name(&day.file_name()) {
+                continue;
+            }
             if seen_files.contains(&day_path) {
                 continue;
             }
@@ -309,6 +323,41 @@ pub fn find_run(repo: &Path, run_id: &str) -> Result<Option<RunSnapshot>> {
         }
     }
     Ok(snapshot.map(finalize_duration))
+}
+
+/// True iff `name` matches the canonical zero-padded `YYYY-MM` shape.
+/// Rejects `2026-13`, `archive`, `.DS_Store`, `2026-05-extra`, `2026-5`
+/// (single-digit month). The byte-level shape check is paired with a
+/// chrono validity check so `2026-13` doesn't slip through.
+fn is_valid_month_dir_name(name: &std::ffi::OsStr) -> bool {
+    let Some(s) = name.to_str() else { return false };
+    if s.len() != 7 || s.as_bytes()[4] != b'-' {
+        return false;
+    }
+    if !s[..4].chars().all(|c| c.is_ascii_digit()) {
+        return false;
+    }
+    if !s[5..].chars().all(|c| c.is_ascii_digit()) {
+        return false;
+    }
+    chrono::NaiveDate::parse_from_str(&format!("{s}-01"), "%Y-%m-%d").is_ok()
+}
+
+/// True iff `name` matches the canonical `YYYY-MM-DD.jsonl` shape.
+/// Rejects `.gitkeep`, `README.md`, `2026-05-29.jsonl.bak`, `2026-5-1.jsonl`.
+fn is_valid_day_file_name(name: &std::ffi::OsStr) -> bool {
+    let Some(s) = name.to_str() else { return false };
+    let Some(stem) = s.strip_suffix(".jsonl") else { return false };
+    if stem.len() != 10 || stem.as_bytes()[4] != b'-' || stem.as_bytes()[7] != b'-' {
+        return false;
+    }
+    if !stem[..4].chars().all(|c| c.is_ascii_digit())
+        || !stem[5..7].chars().all(|c| c.is_ascii_digit())
+        || !stem[8..].chars().all(|c| c.is_ascii_digit())
+    {
+        return false;
+    }
+    chrono::NaiveDate::parse_from_str(stem, "%Y-%m-%d").is_ok()
 }
 
 fn scan_day_file_for_run(
@@ -523,15 +572,12 @@ fn commit_and_push_event(
         }
     }
 
-    // Opt-out gate. The caller signals intent via `push`; `KNACK_AUTO_PUSH=0`
-    // is the env-level kill switch for the entire workspace (e.g. CI runners
-    // that should never touch origin). Either disables the network hop; the
-    // local commit is already on disk so the next pushed event catches up.
-    let env_disabled = matches!(
-        std::env::var("KNACK_AUTO_PUSH").as_deref(),
-        Ok("0") | Ok("false") | Ok("no")
-    );
-    if !push || env_disabled {
+    // Opt-out gate. The caller resolved the policy via
+    // `workspace::PushPolicy::resolve` BEFORE calling us; we just trust
+    // the resolved bool and short-circuit. The single resolver owns
+    // CLI/env/workspace precedence — checking the env again here would
+    // be a second source of truth that could drift.
+    if !push {
         return;
     }
 
@@ -608,5 +654,79 @@ mod tests {
         let snap = found.unwrap();
         assert_eq!(snap.run_id, "very-old-run");
         assert_eq!(snap.skill.as_deref(), Some("x"));
+    }
+
+    #[test]
+    fn find_run_skips_non_ymd_dirs_and_files() {
+        // Plant a legit old run alongside several garbage entries that
+        // would have been opened pre-#15: a `runs/archive/` directory,
+        // a `.DS_Store` directory (macOS reality), and a stray `.bak`
+        // backup file inside an otherwise-valid month directory. After
+        // #15 only `runs/<YYYY-MM>/<YYYY-MM-DD>.jsonl` files get opened.
+        let dir = tempdir().unwrap();
+        let repo = dir.path();
+
+        let old = Utc::now().date_naive() - Duration::days(LOOKBACK_DAYS + 5);
+
+        // Garbage that should be SKIPPED (no panic, no open):
+        fs::create_dir_all(repo.join("runs").join("archive")).unwrap();
+        fs::write(repo.join("runs").join("archive").join("garbage.jsonl"), b"{").unwrap();
+        fs::create_dir_all(repo.join("runs").join(".DS_Store")).unwrap();
+        // A stray .bak inside a real month dir — also skipped.
+        let month_dir = repo
+            .join("runs")
+            .join(format!("{:04}-{:02}", old.year(), old.month()));
+        fs::create_dir_all(&month_dir).unwrap();
+        fs::write(
+            month_dir.join(format!("{:04}-{:02}-{:02}.jsonl.bak", old.year(), old.month(), old.day())),
+            b"{",
+        )
+        .unwrap();
+        // A README in runs/ root.
+        fs::write(repo.join("runs").join("README.md"), b"hi").unwrap();
+
+        // The legit run in the canonical-named file.
+        let started_at = format!("{}T12:00:00Z", old.format("%Y-%m-%d"));
+        let line = serde_json::json!({
+            "event": "started",
+            "run_id": "selective-find",
+            "skill": "ok",
+            "agent": "claude-code",
+            "inputs": ["./a.txt"],
+            "status": "started",
+            "at": started_at,
+        })
+        .to_string();
+        write_event_at(repo, old.year(), old.month(), old.day(), &line);
+
+        // Should find the legit run without blowing up on the garbage.
+        let found = find_run(repo, "selective-find").unwrap();
+        assert!(
+            found.is_some(),
+            "find_run should locate the legit run despite garbage in runs/"
+        );
+        assert_eq!(found.unwrap().skill.as_deref(), Some("ok"));
+    }
+
+    #[test]
+    fn is_valid_month_dir_name_validates() {
+        use std::ffi::OsStr;
+        assert!(is_valid_month_dir_name(OsStr::new("2026-05")));
+        assert!(is_valid_month_dir_name(OsStr::new("2025-12")));
+        assert!(!is_valid_month_dir_name(OsStr::new("archive")));
+        assert!(!is_valid_month_dir_name(OsStr::new(".DS_Store")));
+        assert!(!is_valid_month_dir_name(OsStr::new("2026-13")));
+        assert!(!is_valid_month_dir_name(OsStr::new("2026-5"))); // not zero-padded
+        assert!(!is_valid_month_dir_name(OsStr::new("2026-05-extra")));
+    }
+
+    #[test]
+    fn is_valid_day_file_name_validates() {
+        use std::ffi::OsStr;
+        assert!(is_valid_day_file_name(OsStr::new("2026-05-31.jsonl")));
+        assert!(!is_valid_day_file_name(OsStr::new("2026-05-31.jsonl.bak")));
+        assert!(!is_valid_day_file_name(OsStr::new("README.md")));
+        assert!(!is_valid_day_file_name(OsStr::new(".gitkeep")));
+        assert!(!is_valid_day_file_name(OsStr::new("2026-13-01.jsonl")));
     }
 }

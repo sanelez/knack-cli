@@ -74,12 +74,35 @@ pub async fn run(args: MarkArgs, client: ApiClient, mode: OutputMode) -> CliResu
         .map(|p| p.display().to_string())
         .collect();
 
-    let run_ids: Vec<String> = args
-        .run_id
-        .split(',')
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty())
-        .collect();
+    // Parse and validate each comma-separated id locally before fanning
+    // out N HTTP/git calls. A typo'd `"abc,def"` would have burned two
+    // round trips and returned two 404s; uuid validation short-circuits.
+    let mut run_ids: Vec<String> = Vec::new();
+    let mut invalid: Vec<String> = Vec::new();
+    for piece in args.run_id.split(',') {
+        let s = piece.trim();
+        if s.is_empty() {
+            continue;
+        }
+        if uuid::Uuid::parse_str(s).is_err() {
+            invalid.push(s.to_string());
+        } else {
+            run_ids.push(s.to_string());
+        }
+    }
+    if !invalid.is_empty() {
+        let err = CliError::User {
+            code: "MARK_INVALID_RUN_ID".into(),
+            message: format!(
+                "{} run-id(s) not valid UUIDs: {}",
+                invalid.len(),
+                invalid.join(", ")
+            ),
+            hint: Some("run-ids look like `f8877899-cd2a-4749-b38a-ae885a1b417c`".into()),
+        };
+        emit_err(mode, &err);
+        return Err(err);
+    }
     if run_ids.is_empty() {
         let err = CliError::User {
             code: "MARK_MISSING_RUN_ID".into(),
@@ -91,7 +114,13 @@ pub async fn run(args: MarkArgs, client: ApiClient, mode: OutputMode) -> CliResu
     }
 
     if let BackendMode::Github { local_path, .. } = &client.config.backend {
-        let push = super::run::resolve_push_flag(local_path, args.no_push);
+        let push = match super::run::resolve_push_flag(local_path, args.no_push) {
+            Ok(p) => p,
+            Err(e) => {
+                emit_err(mode, &e);
+                return Err(e);
+            }
+        };
         if run_ids.len() == 1 {
             return github_mark(
                 &run_ids[0],
@@ -149,6 +178,13 @@ async fn cloud_mark_single(
     }
 }
 
+/// Concurrency cap for cloud bulk-mark. Tuned to match the server's
+/// typical per-user concurrent-request budget — high enough that a
+/// 10-id batch finishes in roughly one RTT instead of ten, low enough
+/// that a 100-id batch doesn't stampede the API. If a customer hits
+/// the limit, surface it later via `KNACK_BULK_CONCURRENCY` env.
+const BULK_MARK_CONCURRENCY: usize = 8;
+
 async fn cloud_mark_bulk(
     run_ids: &[String],
     status: &str,
@@ -156,16 +192,35 @@ async fn cloud_mark_bulk(
     client: &ApiClient,
     mode: OutputMode,
 ) -> CliResult<()> {
+    use futures_util::stream::{self, StreamExt};
+
+    // Fan out N parallel POSTs (capped at BULK_MARK_CONCURRENCY). Each
+    // task returns its id + Result so the rolled-up output preserves
+    // per-id success/failure breakdown without losing order.
+    let results: Vec<(String, Result<(), String>)> = stream::iter(run_ids.iter().cloned())
+        .map(|id| {
+            let body = api_runs::RunMarkBody {
+                status: status.to_string(),
+                note: note.map(str::to_string),
+            };
+            async move {
+                let outcome = api_runs::mark(client, &id, &body)
+                    .await
+                    .map(|_| ())
+                    .map_err(|e| format!("{e}"));
+                (id, outcome)
+            }
+        })
+        .buffer_unordered(BULK_MARK_CONCURRENCY)
+        .collect()
+        .await;
+
     let mut succeeded: Vec<String> = Vec::new();
     let mut failed: Vec<(String, String)> = Vec::new();
-    for id in run_ids {
-        let body = api_runs::RunMarkBody {
-            status: status.to_string(),
-            note: note.map(str::to_string),
-        };
-        match api_runs::mark(client, id, &body).await {
-            Ok(_) => succeeded.push(id.clone()),
-            Err(e) => failed.push((id.clone(), format!("{e}"))),
+    for (id, outcome) in results {
+        match outcome {
+            Ok(()) => succeeded.push(id),
+            Err(why) => failed.push((id, why)),
         }
     }
     let all_ok = failed.is_empty();
@@ -189,11 +244,16 @@ async fn cloud_mark_bulk(
     if all_ok {
         Ok(())
     } else {
-        Err(CliError::Internal(format!(
-            "{}/{} marks failed",
-            failed.len(),
-            run_ids.len()
-        )))
+        Err(CliError::Partial {
+            message: format!(
+                "{} of {} marks succeeded; {} failed",
+                succeeded.len(),
+                run_ids.len(),
+                failed.len()
+            ),
+            succeeded: succeeded.len(),
+            failed: failed.len(),
+        })
     }
 }
 
@@ -236,11 +296,16 @@ fn github_mark_bulk(
     if all_ok {
         Ok(())
     } else {
-        Err(CliError::Internal(format!(
-            "{}/{} marks failed",
-            failed.len(),
-            run_ids.len()
-        )))
+        Err(CliError::Partial {
+            message: format!(
+                "{} of {} marks succeeded; {} failed",
+                marked.len(),
+                run_ids.len(),
+                failed.len()
+            ),
+            succeeded: marked.len(),
+            failed: failed.len(),
+        })
     }
 }
 

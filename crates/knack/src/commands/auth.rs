@@ -58,8 +58,15 @@ pub struct LoginArgs {
 
     /// Expire the PAT after N days. Default: 90. Override with any value
     /// 1..=730, or pass `--never-expires` to opt out of rotation entirely.
-    /// The CLI surfaces an AuthRequired one day before expiry.
-    #[arg(long, value_name = "DAYS", conflicts_with = "never_expires")]
+    /// The CLI surfaces an AuthRequired one day before expiry. Values
+    /// outside the range are rejected client-side (no wasted round trip
+    /// to the server's 422).
+    #[arg(
+        long,
+        value_name = "DAYS",
+        conflicts_with = "never_expires",
+        value_parser = clap::value_parser!(i64).range(1..=730),
+    )]
     pub expires_in_days: Option<i64>,
 
     /// Mint a PAT with no expiry. A leaked never-expiring token works
@@ -145,6 +152,15 @@ fn github_login_noop(mode: OutputMode) -> CliResult<()> {
             None,
             "gh CLI not on PATH — install from https://cli.github.com, then `gh auth login`".into(),
         ),
+        GhAuthProbe::Unknown { detail } => (
+            "gh_probe_failed",
+            None,
+            format!(
+                "gh found on PATH but the probe failed ({detail}). \
+                 Possible causes: sandbox blocking `execve`, missing +x, or \
+                 corrupted PATH. Not the same as 'gh not installed'."
+            ),
+        ),
     };
 
     emit_ok(
@@ -177,6 +193,12 @@ enum GhAuthProbe {
     Authenticated { user: String },
     Unauthenticated,
     NotInstalled,
+    /// `gh` was found on PATH but the spawn failed in a way that isn't
+    /// "missing executable" — sandboxed env blocking `execve`, missing
+    /// +x permission, etc. We surface this distinct from
+    /// `NotInstalled` so the user isn't told to install gh when it's
+    /// sitting right there.
+    Unknown { detail: String },
 }
 
 fn probe_gh_auth() -> GhAuthProbe {
@@ -193,7 +215,14 @@ fn probe_gh_auth() -> GhAuthProbe {
             }
         }
         Ok(_) => GhAuthProbe::Unauthenticated,
-        Err(_) => GhAuthProbe::NotInstalled,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            // The canonical "binary isn't on PATH" case — this is the
+            // ONLY shape we should tell the user "install gh" for.
+            GhAuthProbe::NotInstalled
+        }
+        Err(e) => GhAuthProbe::Unknown {
+            detail: format!("{}: {}", e.kind(), e),
+        },
     }
 }
 
@@ -297,6 +326,30 @@ fn host_label() -> String {
         .unwrap_or_else(|_| "unknown".into())
 }
 
+/// PAT-creation options bundled into one struct so the call sites
+/// (`login()` and `login_poll()`) build it once from `LoginArgs` rather
+/// than ferrying four positional args. Adding the next PAT option will
+/// mean editing one struct definition and one builder, not every
+/// `finalize_login_to_pat` call.
+#[derive(Debug, Clone)]
+pub(super) struct PatOptions<'a> {
+    pub label: Option<&'a str>,
+    pub expires_in_days: Option<i64>,
+    pub never_expires: bool,
+    pub scope: &'a str,
+}
+
+impl<'a> PatOptions<'a> {
+    pub fn from_login_args(args: &'a LoginArgs) -> Self {
+        Self {
+            label: args.label.as_deref(),
+            expires_in_days: args.expires_in_days,
+            never_expires: args.never_expires,
+            scope: &args.scope,
+        }
+    }
+}
+
 /// Convert a freshly-received device-flow JWT into a long-lived PAT and
 /// persist it to the primary credential store. Shared by both the
 /// blocking `login()` and stateless `login_poll()` flows so the
@@ -308,39 +361,37 @@ fn host_label() -> String {
 async fn finalize_login_to_pat(
     client: &ApiClient,
     access_jwt: &str,
-    label: Option<&str>,
-    expires_in_days: Option<i64>,
-    never_expires: bool,
-    scope: &str,
+    pat_opts: PatOptions<'_>,
 ) -> Result<(api_auth::CreateCliTokenResponse, api_auth::Me), CliError> {
     // Use the JWT as a one-shot bearer to mint the PAT. The JWT itself
     // is never persisted; we discard it as soon as the PAT lands.
     let jwt_client = client.clone().with_bearer_override(Some(access_jwt.into()));
 
-    let owned_label = label
+    let owned_label = pat_opts
+        .label
         .map(str::to_owned)
         .unwrap_or_else(|| format!("knack-cli@{}", host_label()));
     // Apply the CLI's 90-day default when the caller passed neither
     // --expires-in-days nor --never-expires. The server has its own
     // default (365d) but the CLI tightens it for typical interactive use.
-    let effective_expires = if never_expires {
+    let effective_expires = if pat_opts.never_expires {
         None
     } else {
-        Some(expires_in_days.unwrap_or(DEFAULT_PAT_TTL_DAYS))
+        Some(pat_opts.expires_in_days.unwrap_or(DEFAULT_PAT_TTL_DAYS))
     };
     // Scope `"full"` is the server default. Omit it from the wire payload
     // (which skips emission entirely when the Vec is empty) so older
     // server versions that don't know about scopes keep working.
-    let scopes: Vec<String> = if scope == "full" {
+    let scopes: Vec<String> = if pat_opts.scope == "full" {
         Vec::new()
     } else {
-        vec![scope.to_string()]
+        vec![pat_opts.scope.to_string()]
     };
     let pat = api_auth::create_cli_token(
         &jwt_client,
         &owned_label,
         effective_expires,
-        never_expires,
+        pat_opts.never_expires,
         scopes,
     )
     .await?;
@@ -428,15 +479,7 @@ async fn login_poll(
             emit_err(mode, &err);
             return Err(err);
         }
-        match finalize_login_to_pat(
-            &client,
-            &access,
-            args.label.as_deref(),
-            args.expires_in_days,
-            args.never_expires,
-            &args.scope,
-        )
-        .await
+        match finalize_login_to_pat(&client, &access, PatOptions::from_login_args(&args)).await
         {
             Ok((pat, me)) => {
                 approved_email = Some(me.email);
@@ -550,10 +593,7 @@ async fn login(args: LoginArgs, client: ApiClient, mode: OutputMode) -> CliResul
                 let (pat, me) = match finalize_login_to_pat(
                     &client,
                     &access,
-                    args.label.as_deref(),
-                    args.expires_in_days,
-                    args.never_expires,
-                    &args.scope,
+                    PatOptions::from_login_args(&args),
                 )
                 .await
                 {

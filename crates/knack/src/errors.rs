@@ -18,6 +18,11 @@ impl ExitCode {
     pub const NETWORK: ExitCode = ExitCode(3);
     pub const CONFLICT: ExitCode = ExitCode(4);
     pub const PLAN: ExitCode = ExitCode(5);
+    /// Bulk operation where some items succeeded and others failed. The
+    /// successful ones already landed (durable). Distinct from INTERNAL
+    /// so a CI script like `knack mark a,b,c succeeded || rollback`
+    /// can tell "9 of 10 marks succeeded" from "the CLI crashed."
+    pub const PARTIAL: ExitCode = ExitCode(6);
     pub const USAGE: ExitCode = ExitCode(64);
     pub const INTERNAL: ExitCode = ExitCode(70);
 }
@@ -63,6 +68,19 @@ pub enum CliError {
         message: String,
     },
 
+    /// Some items in a bulk operation succeeded, others failed. The
+    /// successful items are durable (already landed server-side or on
+    /// disk). The structured envelope carries the per-item breakdown so
+    /// callers can branch on `succeeded[]` / `failed[]` instead of
+    /// re-running the whole batch. Exit code is distinct from INTERNAL
+    /// so a CI script can tell "partial success" from "CLI crashed."
+    #[error("{message}")]
+    Partial {
+        message: String,
+        succeeded: usize,
+        failed: usize,
+    },
+
     #[error("{0}")]
     Internal(String),
 }
@@ -89,6 +107,7 @@ impl CliError {
             CliError::PlanLimit { .. } => "PLAN_LIMIT_EXCEEDED",
             CliError::NotFound(_) => "NOT_FOUND",
             CliError::Server { .. } => "SERVER",
+            CliError::Partial { .. } => "PARTIAL_FAILURE",
             CliError::Internal(_) => "INTERNAL",
         }
     }
@@ -100,6 +119,7 @@ impl CliError {
             CliError::Network(_) => ExitCode::NETWORK,
             CliError::Conflict { .. } => ExitCode::CONFLICT,
             CliError::PlanLimit { .. } => ExitCode::PLAN,
+            CliError::Partial { .. } => ExitCode::PARTIAL,
             CliError::Server { .. } | CliError::Internal(_) => ExitCode::INTERNAL,
         }
     }
