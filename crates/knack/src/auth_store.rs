@@ -417,6 +417,7 @@ impl TokenStore for MemoryStore {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::{Mutex, MutexGuard};
     use tempfile::TempDir;
 
     fn sample_pat() -> StoredCredential {
@@ -445,15 +446,26 @@ mod tests {
         }
     }
 
+    /// Serializes every test that touches `KNACK_AUTH_FILE` / `CODEX_HOME`.
+    /// Cargo runs tests in parallel by default and these tests poke at
+    /// process-global env state; without serialization two tests' env
+    /// overrides race and `auth_file_path()` resolves to the wrong path.
+    /// Same pattern `crates/knack-backend-github/src/workspace.rs::tests::
+    /// ENV_LOCK` uses.
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
+
     /// Point ``auth_file_path`` at a fresh tempdir per test so we never
-    /// touch the developer's real `~/.knack/auth.json`.
-    fn isolate_file_store() -> (TempDir, PathBuf) {
+    /// touch the developer's real `~/.knack/auth.json`. Returns the
+    /// MutexGuard alongside the tempdir so the lock lives for the whole
+    /// test body (drop order: guard → tempdir → unlock).
+    fn isolate_file_store() -> (MutexGuard<'static, ()>, TempDir, PathBuf) {
+        let guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let dir = TempDir::new().unwrap();
         let path = dir.path().join("auth.json");
         unsafe {
             std::env::set_var("KNACK_AUTH_FILE", &path);
         }
-        (dir, path)
+        (guard, dir, path)
     }
 
     #[test]
@@ -485,7 +497,7 @@ mod tests {
 
     #[test]
     fn file_store_round_trips() {
-        let (_dir, path) = isolate_file_store();
+        let (_guard, _dir, path) = isolate_file_store();
         let store = FileStore::new(&path);
         assert!(store.load("default").unwrap().is_none());
         store.save("default", &sample_pat()).unwrap();
@@ -499,7 +511,7 @@ mod tests {
 
     #[test]
     fn file_store_isolates_accounts() {
-        let (_dir, path) = isolate_file_store();
+        let (_guard, _dir, path) = isolate_file_store();
         let store = FileStore::new(&path);
         let mut work = sample_pat();
         work.label = Some("work".into());
@@ -525,7 +537,7 @@ mod tests {
 
     #[test]
     fn file_store_atomic_write_leaves_no_tempfiles() {
-        let (_dir, path) = isolate_file_store();
+        let (_guard, _dir, path) = isolate_file_store();
         let store = FileStore::new(&path);
         store.save("default", &sample_pat()).unwrap();
         let mut second = sample_pat();
@@ -542,7 +554,7 @@ mod tests {
 
     #[test]
     fn file_store_missing_file_returns_none() {
-        let (_dir, path) = isolate_file_store();
+        let (_guard, _dir, path) = isolate_file_store();
         let store = FileStore::new(&path);
         assert!(!path.exists());
         assert!(store.load("default").unwrap().is_none());
@@ -550,7 +562,7 @@ mod tests {
 
     #[test]
     fn file_store_rejects_unknown_schema_version() {
-        let (_dir, path) = isolate_file_store();
+        let (_guard, _dir, path) = isolate_file_store();
         fs::create_dir_all(path.parent().unwrap()).unwrap();
         fs::write(&path, r#"{"version": 999, "accounts": {}}"#).unwrap();
         let store = FileStore::new(&path);
@@ -565,7 +577,7 @@ mod tests {
         // Pre-0.5 keyring entries had the field named `access_token`. The
         // serde alias on StoredCredential::token means a hand-migrated
         // file from those entries still parses correctly.
-        let (_dir, path) = isolate_file_store();
+        let (_guard, _dir, path) = isolate_file_store();
         fs::create_dir_all(path.parent().unwrap()).unwrap();
         fs::write(
             &path,
@@ -582,7 +594,7 @@ mod tests {
     #[test]
     fn file_store_writes_with_0600_perms() {
         use std::os::unix::fs::PermissionsExt;
-        let (_dir, path) = isolate_file_store();
+        let (_guard, _dir, path) = isolate_file_store();
         let store = FileStore::new(&path);
         store.save("default", &sample_pat()).unwrap();
         let mode = fs::metadata(&path).unwrap().permissions().mode() & 0o777;
@@ -608,6 +620,7 @@ mod tests {
 
     #[test]
     fn auth_file_path_uses_codex_sandbox_fallback_when_codex_home_ends_in_dot_codex() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         clear_codex_env();
         // Simulate Codex sandbox: CODEX_HOME points at the real user's
         // .codex even though dirs::home_dir() inside the sandbox would
@@ -634,6 +647,7 @@ mod tests {
 
     #[test]
     fn auth_file_path_ignores_codex_home_with_nonstandard_basename() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         clear_codex_env();
         // Custom CODEX_HOME that doesn't end in `.codex` — could be a
         // user-customized layout. We should NOT assume `parent()` is a
@@ -658,6 +672,7 @@ mod tests {
 
     #[test]
     fn auth_file_path_env_override_beats_codex_fallback() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         clear_codex_env();
         // Explicit KNACK_AUTH_FILE wins over both the Codex fallback
         // and the dirs::home_dir() default — used by tests and by

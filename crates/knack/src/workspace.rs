@@ -40,17 +40,47 @@ pub const FOLDERS_INDEX_FILE: &str = "folders.json";
 
 /// Walk up the directory tree from `start` looking for an existing
 /// ``.knack/`` directory. Returns the path TO that directory (not its
-/// parent) or ``None`` when we hit the filesystem root without finding
-/// one.
+/// parent) or ``None`` when we hit either the filesystem root OR the
+/// user's HOME without finding one.
+///
+/// The HOME boundary is load-bearing: the user's `~/.knack/` is the
+/// `--global` pull pool, not a workspace root that every project under
+/// HOME silently inherits. Without this guard, a fresh `knack create`
+/// from any project dir on a typical setup
+/// (`C:\Users\Jordan\PycharmProjects\…` or `~/code/…`) would resolve
+/// to `~/.knack/skills/` and quietly pollute the global pool. Stop
+/// the walk BEFORE inspecting HOME so the next caller falls back to
+/// `<cwd>/.knack/skills/` (the project-local default) per
+/// `resolve_skills_root` rule #4.
 ///
 /// Symmetric with `git rev-parse --show-toplevel` in spirit — a single
-/// `.knack/` checkpoint anywhere up the tree wins.
+/// `.knack/` checkpoint anywhere up the tree wins, bounded by HOME.
 pub fn discover_workspace_root(start: &Path) -> Option<PathBuf> {
+    let home = dirs::home_dir().and_then(|h| h.canonicalize().ok());
+    discover_workspace_root_with_home(start, home.as_deref())
+}
+
+/// Inner form of [`discover_workspace_root`] that takes the HOME path
+/// explicitly. Production code goes through `discover_workspace_root`
+/// (which resolves HOME via `dirs::home_dir()`); tests use this form
+/// directly with a controlled fake HOME because `dirs::home_dir()` on
+/// Windows reads from the Win32 API rather than the `USERPROFILE` env
+/// var, so an `env::set_var` shim in a test wouldn't take effect.
+fn discover_workspace_root_with_home(start: &Path, home: Option<&Path>) -> Option<PathBuf> {
+    // Canonicalize both paths so the comparison sees the same shape —
+    // tempfile-style paths on Windows often gain a `\\?\` verbatim
+    // prefix after canonicalize that the raw input doesn't have.
+    let home_canon = home.and_then(|h| h.canonicalize().ok());
     let mut cur = start
         .canonicalize()
         .ok()
         .unwrap_or_else(|| start.to_path_buf());
     loop {
+        if let Some(h) = &home_canon {
+            if cur == *h {
+                return None;
+            }
+        }
         let candidate = cur.join(WORKSPACE_DIR_NAME);
         if candidate.is_dir() {
             return Some(candidate);
@@ -409,10 +439,51 @@ mod tests {
 
     #[test]
     fn discover_returns_none_when_no_workspace_exists() {
-        let root = tempdir().unwrap();
-        let nested = root.path().join("a").join("b");
+        // The start path must live UNDER the fake HOME for the HOME
+        // boundary to be the walk's actual stop point. Without that,
+        // on a real machine the walk escapes the fake tempdir and
+        // eventually reaches the user's real HOME — where `~/.knack/`
+        // often exists and would match.
+        let fake_home = tempdir().unwrap();
+        let nested = fake_home.path().join("project").join("a").join("b");
         fs::create_dir_all(&nested).unwrap();
-        assert!(discover_workspace_root(&nested).is_none());
+        assert!(
+            discover_workspace_root_with_home(&nested, Some(fake_home.path())).is_none()
+        );
+    }
+
+    #[test]
+    fn discover_stops_at_home_even_when_home_knack_exists() {
+        // The user's `~/.knack/` is the global pool, not a workspace
+        // root every project under HOME inherits silently. A walk from
+        // a subdir under HOME must stop at HOME and return None even
+        // though `<home>/.knack/` exists.
+        let fake_home = tempdir().unwrap();
+        // Plant a `~/.knack/` to prove the walk skips it.
+        fs::create_dir_all(fake_home.path().join(WORKSPACE_DIR_NAME)).unwrap();
+        let project = fake_home.path().join("projects").join("x");
+        fs::create_dir_all(&project).unwrap();
+        assert!(
+            discover_workspace_root_with_home(&project, Some(fake_home.path())).is_none(),
+            "discover_workspace_root_with_home must not climb into HOME"
+        );
+    }
+
+    #[test]
+    fn discover_finds_workspace_above_start_below_home() {
+        // The HOME stop must NOT prevent finding a real workspace marker
+        // somewhere in between the start path and HOME. Plant
+        // `<home>/projects/repo/.knack/`, start the walk from
+        // `<home>/projects/repo/src/`, and expect a hit.
+        let fake_home = tempdir().unwrap();
+        let repo = fake_home.path().join("projects").join("repo");
+        fs::create_dir_all(repo.join(WORKSPACE_DIR_NAME)).unwrap();
+        let src = repo.join("src");
+        fs::create_dir_all(&src).unwrap();
+        let found =
+            discover_workspace_root_with_home(&src, Some(fake_home.path())).unwrap();
+        let expected = repo.canonicalize().unwrap().join(WORKSPACE_DIR_NAME);
+        assert_eq!(found, expected);
     }
 
     #[test]
@@ -450,11 +521,15 @@ mod tests {
 
     #[test]
     fn resolve_skills_root_falls_back_to_cwd_dot_knack() {
+        // `resolve_skills_root` internally calls `discover_workspace_root`
+        // which now stops at the user's real HOME. The tempdir lives
+        // under HOME on every platform we run on, so the walk halts at
+        // HOME (before finding any `~/.knack/`) and falls back to
+        // `<cwd>/.knack/skills/`. The previous test design relied on
+        // the walk hitting filesystem root; that was the bug.
         let root = tempdir().unwrap();
         let home = PathBuf::from("/home/jane/.knack/skills");
 
-        // No `.knack/` exists yet, so discovery fails and the fallback
-        // path is just `<cwd>/.knack/skills` (not canonicalized).
         let resolved = resolve_skills_root(root.path(), false, None, &home);
         assert_eq!(
             resolved,

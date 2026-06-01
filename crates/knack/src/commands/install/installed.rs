@@ -177,24 +177,36 @@ pub fn list() -> io::Result<Vec<AgentEntry>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::{Mutex, MutexGuard};
     use tempfile::TempDir;
 
+    /// `isolate()` writes the `KNACK_INSTALLED_FILE` env var; cargo runs
+    /// tests in parallel by default, so without serialization one test's
+    /// override leaks into the next and `load()`/`save()` race against
+    /// the wrong file. Each test acquires this guard at the top of the
+    /// body to force single-thread access to the env var.
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
+
     /// Point ``record_path`` at a fresh tempdir per test so we don't
-    /// pollute the user's real ``~/.knack/installed.json``.
-    fn isolate() -> (TempDir, PathBuf) {
+    /// pollute the user's real ``~/.knack/installed.json``. Returns the
+    /// `MutexGuard` along with the tempdir so the lock outlives the
+    /// test body (drop order: guard → tempdir → unlock).
+    fn isolate() -> (MutexGuard<'static, ()>, TempDir, PathBuf) {
+        let guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let dir = TempDir::new().unwrap();
         let path = dir.path().join("installed.json");
-        // SAFETY: tests in this crate run single-threaded by default; the
-        // env var is the documented override seam.
+        // SAFETY: the ENV_LOCK guard above serializes every test that
+        // touches this env var, so this set_var is race-free for the
+        // duration of the test that holds the guard.
         unsafe {
             std::env::set_var("KNACK_INSTALLED_FILE", &path);
         }
-        (dir, path)
+        (guard, dir, path)
     }
 
     #[test]
     fn load_missing_file_returns_empty() {
-        let (_dir, _) = isolate();
+        let (_guard, _dir, _) = isolate();
         let rec = load().unwrap();
         assert!(rec.agents.is_empty());
         assert_eq!(rec.version, SCHEMA_VERSION);
@@ -202,7 +214,7 @@ mod tests {
 
     #[test]
     fn add_then_remove_round_trips() {
-        let (_dir, path) = isolate();
+        let (_guard, _dir, path) = isolate();
         add("claude", Scope::Home, PathBuf::from("/x/CLAUDE.md")).unwrap();
         assert!(path.exists());
         let entries = list().unwrap();
@@ -216,7 +228,7 @@ mod tests {
 
     #[test]
     fn add_dedupes_same_slug_same_scope() {
-        let (_dir, _) = isolate();
+        let (_guard, _dir, _) = isolate();
         add("claude", Scope::Home, PathBuf::from("/a")).unwrap();
         add("claude", Scope::Home, PathBuf::from("/b")).unwrap();
         let entries = list().unwrap();
@@ -226,7 +238,7 @@ mod tests {
 
     #[test]
     fn add_keeps_same_slug_different_scope() {
-        let (_dir, _) = isolate();
+        let (_guard, _dir, _) = isolate();
         add("claude", Scope::Home, PathBuf::from("/home/x")).unwrap();
         add("claude", Scope::Project, PathBuf::from("/repo/x")).unwrap();
         let entries = list().unwrap();
@@ -235,7 +247,7 @@ mod tests {
 
     #[test]
     fn save_is_atomic_via_tempfile_rename() {
-        let (_dir, path) = isolate();
+        let (_guard, _dir, path) = isolate();
         // Pre-populate an existing record to ensure we don't truncate
         // before the rename lands.
         add("claude", Scope::Home, PathBuf::from("/orig")).unwrap();
