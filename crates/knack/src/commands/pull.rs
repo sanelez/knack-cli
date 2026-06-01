@@ -137,6 +137,17 @@ pub async fn run(args: PullArgs, client: ApiClient, mode: OutputMode) -> CliResu
             &dir.join("meta.knack.yaml"),
             &version.meta_yaml,
         )?);
+        // Mirror the V2a bundle path: write regression cases into
+        // `tests/basic.yaml` when the row carries them. Otherwise the
+        // legacy CLI pull silently truncates a real artifact.
+        if !version.tests_yaml.trim().is_empty() {
+            let tests_dir = dir.join("tests");
+            std::fs::create_dir_all(&tests_dir).map_err(CliError::from)?;
+            acc.extend(write_if_changed(
+                &tests_dir.join("basic.yaml"),
+                &version.tests_yaml,
+            )?);
+        }
         written = acc;
         mode_label = "legacy";
     }

@@ -69,6 +69,11 @@ pub struct SkillVersion {
     pub skill_md: String,
     pub intuition_md: String,
     pub meta_yaml: String,
+    /// Optional regression cases (`tests/basic.yaml`). Empty string if
+    /// the server didn't persist any. `#[serde(default)]` so older
+    /// responses (pre-v0.7.11 schema) still deserialize cleanly.
+    #[serde(default)]
+    pub tests_yaml: String,
     pub parent_version_id: Option<String>,
     pub created_by: Option<String>,
     pub created_at: DateTime<Utc>,

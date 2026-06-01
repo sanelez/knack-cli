@@ -444,7 +444,6 @@ async fn github_create(
     std::fs::create_dir_all(&skill_dir).map_err(CliError::from)?;
     std::fs::create_dir_all(skill_dir.join("examples")).map_err(CliError::from)?;
 
-    let id = uuid::Uuid::new_v4().to_string();
     let description = args
         .description
         .clone()
@@ -466,9 +465,14 @@ async fn github_create(
         name = args.name,
         desc = description,
     );
+    // No `id` field — the schema treats it as optional, and the server
+    // (cloud `skills.id` row, or the self-host repo's directory layout)
+    // is the source of truth for skill identity. A scaffolded random
+    // UUID would later collide with the cloud's META_MISMATCH gate when
+    // the user switches modes; the README's portability claim depends
+    // on this omission.
     let meta_yaml = format!(
-        "id: {id}\nname: {name}\nslug: {slug}\nauthor: {author}\nversion: 0.1.0\ndescription: {desc}\n",
-        id = id,
+        "name: {name}\nslug: {slug}\nauthor: {author}\nversion: 0.1.0\ndescription: {desc}\n",
         name = args.name,
         slug = args.slug,
         author = owner,
