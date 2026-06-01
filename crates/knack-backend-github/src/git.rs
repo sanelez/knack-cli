@@ -68,16 +68,6 @@ pub fn resolve_remote(repo: &Path) -> RemoteTarget {
     target
 }
 
-/// Clear the in-process memoization cache. Test-only — exposed so the
-/// per-test asserts on subprocess-spawn-count can start from a clean
-/// slate even when `cargo test --test-threads=1` reuses the process.
-#[cfg(test)]
-pub fn clear_cache_for_tests() {
-    if let Ok(mut guard) = cache().write() {
-        guard.clear();
-    }
-}
-
 fn resolve_remote_name(repo: &Path) -> String {
     if let Ok(v) = std::env::var("KNACK_REMOTE_NAME") {
         if !v.is_empty() {

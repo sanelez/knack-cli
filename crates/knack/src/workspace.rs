@@ -222,7 +222,55 @@ pub fn init_workspace(at: &Path) -> io::Result<PathBuf> {
     if !readme.exists() {
         fs::write(&readme, README_TEMPLATE)?;
     }
+
+    // If `at/` is a git repo (self-host workspace or any project that
+    // happens to be git-tracked), make sure the parent `.gitignore`
+    // excludes the workspace dir. Without this, a self-host user who
+    // ran `knack init` then `knack create` then `knack publish` would
+    // hit `has_unrelated_dirty` in `knack-backend-github::backend.rs`,
+    // which refuses to publish when the working tree has uncommitted
+    // changes outside `skills/<slug>/`. The workspace `.knack/` is
+    // local agent state (drafts, folders index) — never part of the
+    // skill artifact contract.
+    if at.join(".git").is_dir() {
+        ensure_root_gitignore_excludes_workspace(at)?;
+    }
+
     Ok(ws)
+}
+
+/// Append `.knack/` to `<repo>/.gitignore` if a) the file already
+/// exists and doesn't mention the workspace, or b) the file doesn't
+/// exist yet — in which case we create a minimal one. Idempotent and
+/// non-destructive: hand-edited gitignores keep their content.
+fn ensure_root_gitignore_excludes_workspace(repo_root: &Path) -> io::Result<()> {
+    let gitignore = repo_root.join(GITIGNORE_FILE);
+    let line = format!("{}/", WORKSPACE_DIR_NAME);
+    if gitignore.exists() {
+        let existing = fs::read_to_string(&gitignore)?;
+        // Cheap textual match — a hand-written `.knack` or `.knack/` is
+        // fine and we don't need to be strict about trailing slash.
+        let already_excluded = existing
+            .lines()
+            .any(|raw| {
+                let trimmed = raw.trim();
+                trimmed == ".knack" || trimmed == ".knack/" || trimmed == "/.knack" || trimmed == "/.knack/"
+            });
+        if already_excluded {
+            return Ok(());
+        }
+        let needs_newline = !existing.is_empty() && !existing.ends_with('\n');
+        let mut updated = existing;
+        if needs_newline {
+            updated.push('\n');
+        }
+        updated.push_str(&line);
+        updated.push('\n');
+        fs::write(&gitignore, updated)?;
+    } else {
+        fs::write(&gitignore, format!("{}\n", line))?;
+    }
+    Ok(())
 }
 
 /// True iff the path looks like an existing ``.knack/`` workspace
@@ -536,6 +584,74 @@ mod tests {
             root.path().join(WORKSPACE_DIR_NAME).join(SKILLS_SUBDIR),
         );
         let _ = env::current_dir();
+    }
+
+    #[test]
+    fn init_workspace_adds_dot_knack_to_root_gitignore_inside_git_repo() {
+        // The publish path's `has_unrelated_dirty` check refuses any
+        // uncommitted state outside `skills/<slug>/`. After a fresh
+        // `knack init --self-host --skip-bootstrap` over a cloned
+        // repo, the `.knack/` workspace dir lands as untracked state
+        // and breaks the next publish. init_workspace now writes a
+        // `.knack/` line into the root `.gitignore` so the workspace
+        // is never visible to `git status` in the first place.
+        let repo = tempdir().unwrap();
+        // Pretend it's a git repo by planting `.git/`.
+        fs::create_dir_all(repo.path().join(".git")).unwrap();
+
+        init_workspace(repo.path()).unwrap();
+
+        let gitignore = repo.path().join(".gitignore");
+        assert!(gitignore.is_file(), "root .gitignore must be created");
+        let body = fs::read_to_string(&gitignore).unwrap();
+        assert!(
+            body.lines().any(|l| l.trim() == ".knack/"),
+            "root .gitignore should contain a `.knack/` line, got: {body:?}"
+        );
+    }
+
+    #[test]
+    fn init_workspace_preserves_existing_root_gitignore() {
+        // Don't trample a hand-edited root .gitignore — just append.
+        let repo = tempdir().unwrap();
+        fs::create_dir_all(repo.path().join(".git")).unwrap();
+        fs::write(
+            repo.path().join(".gitignore"),
+            "node_modules/\ndist/\n",
+        )
+        .unwrap();
+
+        init_workspace(repo.path()).unwrap();
+
+        let body = fs::read_to_string(repo.path().join(".gitignore")).unwrap();
+        assert!(body.contains("node_modules/"), "existing entry must survive");
+        assert!(body.contains("dist/"), "existing entry must survive");
+        assert!(body.lines().any(|l| l.trim() == ".knack/"));
+    }
+
+    #[test]
+    fn init_workspace_skips_root_gitignore_when_not_a_git_repo() {
+        // Outside a git repo there's no value polluting the user's
+        // directory with a stray `.gitignore`. Only do it when the
+        // gate fires (i.e. when `.git/` is present).
+        let dir = tempdir().unwrap();
+        init_workspace(dir.path()).unwrap();
+        assert!(!dir.path().join(".gitignore").exists(),
+            "non-git contexts shouldn't get a generated root .gitignore");
+    }
+
+    #[test]
+    fn init_workspace_root_gitignore_is_idempotent() {
+        // Re-running `knack init` in the same repo shouldn't keep
+        // appending `.knack/` lines.
+        let repo = tempdir().unwrap();
+        fs::create_dir_all(repo.path().join(".git")).unwrap();
+        init_workspace(repo.path()).unwrap();
+        init_workspace(repo.path()).unwrap();
+        init_workspace(repo.path()).unwrap();
+        let body = fs::read_to_string(repo.path().join(".gitignore")).unwrap();
+        let count = body.lines().filter(|l| l.trim() == ".knack/").count();
+        assert_eq!(count, 1, "exactly one `.knack/` line expected, got {count}: {body:?}");
     }
 
     #[test]
