@@ -1,6 +1,6 @@
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
-use git2::{IndexAddOption, Repository, Signature};
+use git2::{IndexAddOption, Repository, Signature, StatusOptions};
 use knack_types::{
     Backend, BackendError, BackendResult, PublishReceipt, RunLog, SkillFile, SkillManifest,
     SkillPackage, SkillSource, SkillSummary,
@@ -202,8 +202,18 @@ fn publish_blocking(
 }
 
 fn has_unrelated_dirty(repo: &Repository, current_slug: &str) -> BackendResult<bool> {
+    // `Repository::statuses(None)` defaults to including ignored entries,
+    // which flags the `.knack/` workspace that `knack init --self-host`
+    // plants (and that the planted `.knack/.gitignore` then ignores) as a
+    // dirty path. Result: every freshly-init'd self-host user's first
+    // publish aborts with GH_PUBLISH_FAILED. Explicitly opt out of
+    // ignored entries; we only care about real working-tree changes.
+    let mut opts = StatusOptions::new();
+    opts.include_ignored(false)
+        .include_untracked(true)
+        .recurse_untracked_dirs(true);
     let statuses = repo
-        .statuses(None)
+        .statuses(Some(&mut opts))
         .map_err(|e| BackendError::Other(format!("git status: {e}")))?;
     let prefix = format!("skills/{}", current_slug);
     for entry in statuses.iter() {
@@ -547,5 +557,96 @@ mod tests {
         .unwrap();
         let results = search_blocking(dir.path(), "needle").unwrap();
         assert!(results.is_empty());
+    }
+
+    fn init_repo_with_root_gitignore(root: &Path, ignore_body: &str) -> Repository {
+        let repo = Repository::init(root).unwrap();
+        {
+            // libgit2 needs a user identity to even produce status. Set
+            // local config so the test doesn't depend on the runner's
+            // global git config.
+            let mut cfg = repo.config().unwrap();
+            cfg.set_str("user.name", "test").unwrap();
+            cfg.set_str("user.email", "test@example.com").unwrap();
+        }
+        fs::write(root.join(".gitignore"), ignore_body).unwrap();
+        // Commit the .gitignore so it isn't itself a dirty entry that
+        // pollutes the status check below. A real self-host repo always
+        // has its .gitignore committed before the first publish.
+        {
+            let mut index = repo.index().unwrap();
+            index.add_path(Path::new(".gitignore")).unwrap();
+            index.write().unwrap();
+            let tree_oid = index.write_tree().unwrap();
+            let tree = repo.find_tree(tree_oid).unwrap();
+            let sig = Signature::now("test", "test@example.com").unwrap();
+            repo.commit(Some("HEAD"), &sig, &sig, "init", &tree, &[])
+                .unwrap();
+        }
+        repo
+    }
+
+    #[test]
+    fn dirty_check_ignores_gitignored_knack_workspace() {
+        // Layer 3 smoke surfaced this: `knack init --self-host` plants
+        // a `.knack/` workspace dir + a `.knack/.gitignore`, and the
+        // working-tree-dirty check was including IGNORED entries by
+        // default. Result: every fresh self-host user's first publish
+        // aborted with GH_PUBLISH_FAILED. Pin the fix.
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let repo = init_repo_with_root_gitignore(root, ".knack/\n");
+        // Materialize the planted workspace dir + a stub file so it
+        // shows up in `git status --ignored`.
+        fs::create_dir_all(root.join(".knack/skills")).unwrap();
+        fs::write(root.join(".knack/config.yaml"), "mode: github\n").unwrap();
+
+        assert_eq!(
+            has_unrelated_dirty(&repo, "any-slug").unwrap(),
+            false,
+            "ignored .knack/ workspace must not count as unrelated dirt"
+        );
+    }
+
+    #[test]
+    fn dirty_check_flags_real_unrelated_changes() {
+        // Negative-space pair for the test above: an actual untracked
+        // file outside skills/<slug>/ must still trip the check.
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let repo = init_repo_with_root_gitignore(root, "");
+        fs::write(root.join("stray.txt"), "untracked\n").unwrap();
+        assert_eq!(has_unrelated_dirty(&repo, "any-slug").unwrap(), true);
+    }
+
+    #[test]
+    fn dirty_check_allows_changes_inside_current_skill_prefix() {
+        // Don't regress the original intent: in-skill churn is the
+        // publish's own work and must be allowed.
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let repo = init_repo_with_root_gitignore(root, "");
+        let skill_dir = root.join("skills/alpha");
+        fs::create_dir_all(&skill_dir).unwrap();
+        fs::write(skill_dir.join("SKILL.md"), "# Alpha\n").unwrap();
+        // Recurse untracked dirs so leaf paths are reported instead of
+        // the collapsed `skills/` parent — matches what we need to do
+        // in production too. We also rebuild the StatusOptions here to
+        // sanity-check the production fix when the only dirt is leaf
+        // files under the current skill's prefix.
+        let mut opts = StatusOptions::new();
+        opts.include_ignored(false)
+            .include_untracked(true)
+            .recurse_untracked_dirs(true);
+        let statuses = repo.statuses(Some(&mut opts)).unwrap();
+        let paths: Vec<_> = statuses
+            .iter()
+            .filter_map(|e| e.path().map(str::to_string))
+            .collect();
+        assert!(
+            paths.iter().all(|p| p.starts_with("skills/alpha")),
+            "all dirt should be inside skills/alpha, got: {paths:?}"
+        );
+        assert_eq!(has_unrelated_dirty(&repo, "alpha").unwrap(), false);
     }
 }
