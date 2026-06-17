@@ -18,12 +18,44 @@ If still missing:
 - Linux: install `gnome-keyring` or `kwallet`; or set `KNACK_AUTH_TOKEN` env var
 - Windows: should Just Work; if not, run as your normal user (not Administrator)
 
+### First step for any network error: run the connectivity check
+
+    knack debug --connectivity
+
+It probes every host knack needs and tells you exactly which one fails
+and how (DNS/TCP, TLS, or timeout) — no login required. A `TLS` result
+means a TLS-inspecting proxy (see below); a `CONNECT` result usually
+means that host is firewalled.
+
 ### Behind a corporate proxy
 
-Set standard env vars:
+knack honors the standard proxy env vars:
 
     export HTTPS_PROXY=http://proxy.corp:3128
     export HTTP_PROXY=http://proxy.corp:3128
+    # with credentials:
+    export HTTPS_PROXY=http://user:pass@proxy.corp:3128
+
+If your proxy requires NTLM or Kerberos (Negotiate) auth, knack can't
+speak those directly. Run a local auth-handling proxy such as `cntlm` or
+`px` and point knack at it:
+
+    export HTTPS_PROXY=http://localhost:3128
+
+### Allowlist these hosts
+
+If your firewall allowlists by hostname, knack needs ALL of these, not
+just the API — a common trap is allowlisting `api.getknack.ai` only, then
+seeing `publish`/`pull` fail because skill bundles live on a different
+(storage) host:
+
+    api.getknack.ai      API
+    getknack.ai          web sign-in + docs
+    cli.getknack.ai      install / upgrade
+    <bundle storage>     publish / pull   (run `knack debug --connectivity`
+                                           to print the exact host)
+
+`knack debug --connectivity` always shows the current, authoritative list.
 
 ### `NETWORK` error on a TLS-inspecting network (Netskope / Zscaler / etc.)
 

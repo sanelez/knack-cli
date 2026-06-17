@@ -26,6 +26,108 @@ pub fn client() -> reqwest::Client {
         .unwrap_or_else(|_| reqwest::Client::new())
 }
 
+/// Where a connectivity probe stopped. Drives the operator-facing hint in
+/// `knack debug --connectivity`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProbeStage {
+    /// Reached the host and got an HTTP response (any status, even 4xx).
+    Ok,
+    /// TLS handshake failed — almost always a TLS-inspecting proxy whose
+    /// CA isn't trusted. Points the user straight at `--cacert`.
+    Tls,
+    /// DNS / TCP connect failed (host blocked, firewalled, or no route).
+    Connect,
+    /// Connected but the request didn't complete in time.
+    Timeout,
+}
+
+impl ProbeStage {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            ProbeStage::Ok => "OK",
+            ProbeStage::Tls => "TLS",
+            ProbeStage::Connect => "CONNECT",
+            ProbeStage::Timeout => "TIMEOUT",
+        }
+    }
+}
+
+/// Result of probing one host.
+#[derive(Debug, Clone)]
+pub struct ProbeResult {
+    pub stage: ProbeStage,
+    /// HTTP status code when the host answered, else None.
+    pub http_status: Option<u16>,
+    /// Short human detail (error summary or status line).
+    pub detail: String,
+}
+
+fn looks_like_tls_error(err: &reqwest::Error) -> bool {
+    // reqwest collapses rustls handshake failures into a connect error;
+    // the cert/verify wording only lives in the source chain, so walk it.
+    let mut src: Option<&dyn std::error::Error> = Some(err);
+    while let Some(e) = src {
+        let s = e.to_string().to_ascii_lowercase();
+        if s.contains("certificate")
+            || s.contains("cert ")
+            || s.contains("tls")
+            || s.contains("handshake")
+            || s.contains("verify")
+            || s.contains("self-signed")
+            || s.contains("unknownissuer")
+            || s.contains("invalidcertificate")
+        {
+            return true;
+        }
+        src = e.source();
+    }
+    false
+}
+
+/// Probe one host over HTTPS with a short timeout, classifying the outcome
+/// so a corporate-network failure reads as "host X blocked at stage Y"
+/// instead of a generic NETWORK error. Any HTTP status counts as reachable
+/// — a 401/403/404 still proves DNS + TCP + TLS all worked. Honors the
+/// process TLS policy (so a passing TLS stage also proves a `--cacert` /
+/// native-roots fix is working).
+pub async fn probe_host(host: &str) -> ProbeResult {
+    let url = format!("https://{host}/");
+    let http = match client_builder()
+        .timeout(std::time::Duration::from_secs(5))
+        .build()
+    {
+        Ok(c) => c,
+        Err(e) => {
+            return ProbeResult {
+                stage: ProbeStage::Connect,
+                http_status: None,
+                detail: format!("client build failed: {e}"),
+            }
+        }
+    };
+    match http.get(&url).send().await {
+        Ok(resp) => ProbeResult {
+            stage: ProbeStage::Ok,
+            http_status: Some(resp.status().as_u16()),
+            detail: format!("HTTP {}", resp.status().as_u16()),
+        },
+        Err(e) => {
+            let stage = if e.is_timeout() {
+                ProbeStage::Timeout
+            } else if looks_like_tls_error(&e) {
+                ProbeStage::Tls
+            } else {
+                ProbeStage::Connect
+            };
+            ProbeResult {
+                stage,
+                http_status: None,
+                detail: e.to_string(),
+            }
+        }
+    }
+}
+
 /// Apply the process TLS settings to any builder. Shared so a builder that
 /// needs custom timeouts still gets the custom-CA / insecure handling.
 pub fn apply_tls(mut builder: reqwest::ClientBuilder) -> reqwest::ClientBuilder {

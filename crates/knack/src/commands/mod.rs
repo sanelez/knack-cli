@@ -241,7 +241,7 @@ pub async fn dispatch(cmd: Command, client: ApiClient, mode: OutputMode) -> CliR
         Command::Docs(a) => docs::run(a, mode),
         Command::Introspect(a) => introspect::run(a, mode),
         Command::Completions(a) => completions::run(a, mode),
-        Command::Debug(a) => debug::run(a, client, mode),
+        Command::Debug(a) => debug::run(a, client, mode).await,
         Command::Install(a) => install::run(a, mode),
         Command::Uninstall(a) => uninstall::run(a, client, mode).await,
         Command::Upgrade(a) => upgrade::run(a, mode),
