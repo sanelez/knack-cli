@@ -135,10 +135,10 @@ async fn cloud_export(
     let mut exported: Vec<String> = Vec::new();
     let mut skipped: Vec<(String, String)> = Vec::new();
 
-    let http = reqwest::Client::builder()
+    let http = crate::http::client_builder()
         .timeout(Duration::from_secs(BUNDLE_GET_TIMEOUT_S))
         .build()
-        .unwrap_or_else(|_| reqwest::Client::new());
+        .unwrap_or_else(|_| crate::http::client());
 
     // Progress bar — but only render in human mode. `--json` agents
     // would choke on the ANSI escapes / re-draws and they're streaming

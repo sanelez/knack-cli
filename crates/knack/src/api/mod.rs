@@ -324,8 +324,7 @@ impl ApiClient {
     ) -> Self {
         Self {
             config,
-            http: Client::builder()
-                .user_agent(concat!("knack-cli/", env!("CARGO_PKG_VERSION")))
+            http: crate::http::client_builder()
                 .build()
                 .expect("reqwest client should build"),
             store,

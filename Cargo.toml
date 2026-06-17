@@ -7,7 +7,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.7.17"
+version = "0.7.18"
 edition = "2021"
 rust-version = "1.80"
 authors = ["Knack <hi@getknack.ai>"]
@@ -18,7 +18,13 @@ repository = "https://github.com/jordan-gibbs/knack-cli"
 clap = { version = "4.5", features = ["derive", "env"] }
 clap_complete = "4.5"
 tokio = { version = "1.42", features = ["full"] }
-reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream"] }
+# `rustls-tls` keeps the bundled webpki roots (so bare containers with no
+# system trust store still work); `rustls-tls-native-roots` ADDS the OS
+# trust store on top, so corporate machines that inject a CA into the
+# keychain (TLS-inspecting proxies like Netskope/Zscaler) are trusted by
+# default — the same certs `curl`/`openssl` already accept. A custom CA
+# bundle and an insecure escape hatch layer on via knack_types::tls.
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "rustls-tls-native-roots", "stream"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 serde_yaml = "0.9"

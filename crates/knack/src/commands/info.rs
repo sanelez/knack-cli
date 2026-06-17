@@ -59,7 +59,7 @@ pub async fn run(args: InfoArgs, mode: OutputMode) -> CliResult<()> {
 }
 
 async fn fetch_remote() -> Result<String, reqwest::Error> {
-    let client = reqwest::Client::builder()
+    let client = crate::http::client_builder()
         .timeout(std::time::Duration::from_secs(5))
         .connect_timeout(std::time::Duration::from_secs(1))
         .build()?;

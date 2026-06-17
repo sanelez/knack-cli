@@ -39,6 +39,11 @@ async fn main() -> ExitCode {
 
     let cli = Cli::parse();
     let mode = cli.global.output_mode();
+
+    // Freeze the TLS trust policy before any HTTP client is built. Flags
+    // win over KNACK_CA_BUNDLE / SSL_CERT_FILE / KNACK_INSECURE.
+    knack_types::tls::init(cli.global.cacert.clone(), cli.global.insecure);
+
     let config = Config::load();
     let client = build_client(config, &cli.global);
 

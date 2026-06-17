@@ -31,6 +31,7 @@ pub mod upgrade;
 pub mod username;
 pub mod validate;
 
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use clap::{Args, Subcommand};
@@ -178,6 +179,18 @@ pub struct GlobalArgs {
     /// at the same time.
     #[arg(long, global = true, default_value = "default")]
     pub account: String,
+
+    /// Trust an extra PEM CA bundle on top of the system + bundled roots.
+    /// For corporate TLS-inspecting proxies whose CA isn't in the OS
+    /// keychain. Also via KNACK_CA_BUNDLE or the standard SSL_CERT_FILE.
+    #[arg(long, global = true, value_name = "FILE")]
+    pub cacert: Option<PathBuf>,
+
+    /// Skip TLS certificate verification entirely. Last-resort escape
+    /// hatch for broken corporate proxies; prefer --cacert. Also via
+    /// KNACK_INSECURE=1.
+    #[arg(long, global = true)]
+    pub insecure: bool,
 }
 
 impl GlobalArgs {

@@ -8,6 +8,7 @@ pub mod commands;
 pub mod config;
 pub mod docs;
 pub mod errors;
+pub mod http;
 pub mod output;
 pub mod skill_pack;
 pub mod skill_validators;

@@ -4,6 +4,7 @@
 mod backend;
 mod run;
 mod skill;
+pub mod tls;
 
 pub use backend::*;
 pub use run::*;

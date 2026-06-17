@@ -298,7 +298,7 @@ async fn try_publish_with_bundle(
 
     // PUT the tarball bytes to the presigned R2 URL. No auth header — the
     // signature in the URL is the credential.
-    let put_status = reqwest::Client::new()
+    let put_status = crate::http::client()
         .put(&presign.upload_url)
         .header("Content-Type", "application/gzip")
         .body(packed.bytes)

@@ -25,6 +25,29 @@ Set standard env vars:
     export HTTPS_PROXY=http://proxy.corp:3128
     export HTTP_PROXY=http://proxy.corp:3128
 
+### `NETWORK` error on a TLS-inspecting network (Netskope / Zscaler / etc.)
+
+If `curl https://api.getknack.ai/` works but knack fails with a generic
+`network error ... error sending request`, your network is intercepting
+TLS and presenting a certificate signed by a corporate CA.
+
+knack trusts the OS trust store by default, so if your CA is installed in
+the system keychain (the usual case) this should already work. If the CA
+lives only in a file, point knack at it:
+
+    knack --cacert /path/to/corp-ca.pem auth login
+
+or set it once for the session (also honors the standard SSL_CERT_FILE):
+
+    export KNACK_CA_BUNDLE=/path/to/corp-ca.pem
+
+The bundle is trusted IN ADDITION to the normal roots, so all commands
+(auth, list, publish, run) work. As a last resort only:
+
+    export KNACK_INSECURE=1     # disables cert verification — avoid
+
+Self-host mode (`mode: github`) routes through `gh` and is unaffected.
+
 ### `AUTH_REQUIRED` despite being logged in (cloud mode)
 
 Token expired. PATs default to a 90-day TTL (since v0.7.8), so plan on

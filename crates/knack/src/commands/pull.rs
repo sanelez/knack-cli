@@ -104,7 +104,7 @@ pub async fn run(args: PullArgs, client: ApiClient, mode: OutputMode) -> CliResu
     let written: Vec<PathBuf>;
     if version.packed_s3_key.is_some() {
         let dl = api_skills::bundle_download(&client, &skill.id, &version.version).await?;
-        let resp = reqwest::Client::new().get(&dl.url).send().await?;
+        let resp = crate::http::client().get(&dl.url).send().await?;
         if !resp.status().is_success() {
             let status = resp.status();
             return Err(CliError::Server {

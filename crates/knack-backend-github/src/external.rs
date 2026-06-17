@@ -21,6 +21,44 @@ use crate::auth::resolve_token;
 
 const USER_AGENT: &str = concat!("knack-cli/", env!("CARGO_PKG_VERSION"));
 
+/// reqwest builder with the shared TLS trust policy applied (OS + bundled
+/// roots by default, plus the optional custom CA bundle resolved by
+/// `knack_types::tls`). Mirrors `knack::http` — duplicated rather than
+/// shared because the `knack` crate depends on this one, not the reverse,
+/// and the dependency-free types crate can't pull in reqwest. Keep the
+/// two in sync.
+fn github_client_builder() -> reqwest::ClientBuilder {
+    let mut builder = reqwest::Client::builder().user_agent(USER_AGENT);
+    let tls = knack_types::tls::settings();
+    if let Some(path) = tls.ca_bundle.as_deref() {
+        match std::fs::read(path) {
+            Ok(pem) => match reqwest::Certificate::from_pem_bundle(&pem) {
+                Ok(certs) if certs.is_empty() => eprintln!(
+                    "knack: warning: no PEM certificates found in CA bundle {}",
+                    path.display()
+                ),
+                Ok(certs) => {
+                    for cert in certs {
+                        builder = builder.add_root_certificate(cert);
+                    }
+                }
+                Err(e) => eprintln!(
+                    "knack: warning: ignoring CA bundle {} (parse failed: {e})",
+                    path.display()
+                ),
+            },
+            Err(e) => eprintln!(
+                "knack: warning: ignoring CA bundle {} (read failed: {e})",
+                path.display()
+            ),
+        }
+    }
+    if tls.insecure {
+        builder = builder.danger_accept_invalid_certs(true);
+    }
+    builder
+}
+
 #[derive(Debug, Clone)]
 pub struct ExternalSpec {
     pub owner: String,
@@ -75,8 +113,7 @@ pub fn parse_spec(s: &str) -> Result<ExternalSpec> {
 /// `SkillPackage` ready to be materialized to disk.
 pub async fn pull_external(spec: &ExternalSpec) -> Result<SkillPackage> {
     let auth = resolve_token().context("resolve github token")?;
-    let client = reqwest::Client::builder()
-        .user_agent(USER_AGENT)
+    let client = github_client_builder()
         .build()
         .context("build reqwest client")?;
 
