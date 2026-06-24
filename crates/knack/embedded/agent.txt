@@ -34,6 +34,12 @@ If the knack CLI is already installed, you can re-read this playbook
 at any time by running `knack info`. That command prints this same
 file. Useful if you've been compacted.
 
+This playbook is also addressable by section, so you can pull just the
+part you need instead of all of it: `knack info --list` shows the
+sections, and `knack info <slug> [<slug>...]` prints one or more (e.g.
+`knack info running`, or `knack info interview authoring publishing`).
+Bare `knack info` (this whole file) is best for a full reload.
+
 
 === ABOUT PERSISTENCE (read once) ===
 
