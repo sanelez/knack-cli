@@ -12,10 +12,12 @@ pub mod feedback;
 pub mod folder;
 pub mod fork;
 pub mod info;
+pub mod info_chunks;
 pub mod init;
 pub mod install;
 pub mod interview;
 pub mod introspect;
+pub mod link;
 pub mod list;
 pub mod mark;
 pub mod publish;
@@ -56,6 +58,13 @@ pub enum Command {
     /// Pull a skill folder to disk. Accepts `<slug>`, `<slug>@<semver>`,
     /// `@<author>/<slug>`, or `@<author>/<slug>@<semver>`.
     Pull(pull::PullArgs),
+
+    /// Install a skill as a native `/<slug>` slash command in every agent
+    /// on this machine (telemetry-preserving). `--global` (default) / `--local`.
+    Link(link::LinkArgs),
+
+    /// Remove a linked skill's slash command from agent skill directories.
+    Unlink(link::UnlinkArgs),
 
     /// Bulk export every skill the caller can read to a local directory.
     /// Cloud-only meaningful surface; self-host just points at your clone.
@@ -120,7 +129,9 @@ pub enum Command {
     /// session state between turns.
     Interview(interview::InterviewArgs),
 
-    /// Print the canonical Knack agent playbook (agent.txt). Offline-fallback bundled.
+    /// Print the canonical Knack agent playbook (agent.txt), whole or by
+    /// section. `knack info --list` for the index, `knack info <slug>...` for
+    /// specific sections. Offline-fallback bundled.
     Info(info::InfoArgs),
 
     /// Local pre-flight check on a skill folder. Catches missing required
@@ -229,6 +240,8 @@ pub async fn dispatch(cmd: Command, client: ApiClient, mode: OutputMode) -> CliR
         Command::Auth(c) => auth::run(c, client, mode).await,
         Command::List(a) => list::run(a, client, mode).await,
         Command::Pull(a) => pull::run(a, client, mode).await,
+        Command::Link(a) => link::run_link(a, client, mode).await,
+        Command::Unlink(a) => link::run_unlink(a, client, mode).await,
         Command::Export(a) => export::run(a, client, mode).await,
         Command::Diff(a) => diff::run(a, client, mode).await,
         Command::Create(a) => create::run(a, client, mode).await,

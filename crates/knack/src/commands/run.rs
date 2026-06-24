@@ -146,12 +146,37 @@ pub async fn run(args: RunArgs, client: ApiClient, mode: OutputMode) -> CliResul
         ),
     );
 
+    // Notify-only update flag: if this skill is linked as a slash command
+    // and a newer version has been published upstream (e.g. by a teammate),
+    // surface that — but NEVER pull it automatically. Pinned linked copies
+    // only change when the user explicitly runs `knack link`. Cheap: a
+    // registry read + version compare, no extra network call (we already
+    // have the skill). Suppressed by `KNACK_NO_LINK_UPDATE_CHECK`.
+    let update = if version_filter.is_none() {
+        skill.current_version_semver.as_deref().and_then(|latest| {
+            crate::commands::link::pending_update(
+                slug,
+                latest,
+                skill.owner_username.as_deref(),
+                skill.owner_team_id.is_some(),
+            )
+        })
+    } else {
+        None
+    };
+
     emit_ok(
         mode,
         json!({
             "run_id": run.id,
             "skill_version_id": run.skill_version_id,
             "runtime": runtime,
+            "update_available": update.as_ref().map(|u| json!({
+                "slug": u.slug,
+                "have": u.have,
+                "latest": u.latest,
+                "author": u.author,
+            })),
         }),
         || {
             println!("✓ run registered · {}", run.id);
@@ -163,6 +188,9 @@ pub async fn run(args: RunArgs, client: ApiClient, mode: OutputMode) -> CliResul
                 "        then `knack mark {} succeeded` (or `failed --note \"…\"`).",
                 run.id
             );
+            if let Some(u) = &update {
+                println!("  ⚠ {}", u.line());
+            }
         },
     );
 

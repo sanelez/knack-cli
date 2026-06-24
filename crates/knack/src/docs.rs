@@ -42,6 +42,11 @@ pub const TOPICS: &[Topic] = &[
         body: include_str!("../embedded/cli-docs/agent-integration.md"),
     },
     Topic {
+        slug: "linking",
+        title: "Linking skills as slash commands",
+        body: include_str!("../embedded/cli-docs/linking.md"),
+    },
+    Topic {
         slug: "troubleshooting",
         title: "Troubleshooting",
         body: include_str!("../embedded/cli-docs/troubleshooting.md"),

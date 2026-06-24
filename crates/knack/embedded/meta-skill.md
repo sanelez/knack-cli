@@ -27,16 +27,47 @@ skills exist — ask knack.
 `knack run` does NOT execute the skill. It records a Run on the server.
 YOU read the pulled SKILL.md and do the work with your normal tools.
 
-## Author a new skill
+## Make a skill a slash command
 
-When the user wants to teach you a repeatable workflow, fetch the full
-playbook:
+When the user wants a skill available as a real `/<slug>` command (not just
+pulled files), link it:
 
-    knack info
+    knack link <slug>             # /<slug> in every installed agent (global)
+    knack link <slug> --local     # this project only
+    knack unlink <slug>           # remove it
+    knack link --list             # what is linked, where
+    knack link --check            # which linked skills have upstream updates
+    knack link --all              # update every linked skill to latest
 
-That returns the authoring guide: interview phases (Genesis, Artifacts,
-Intuition, Dry Run), file-inspection rules, publishing flow, and
-runtime-specific gotchas. Treat it as the source of truth.
+`link` writes the full skill into each agent's native skill directory with a
+telemetry wrapper baked in, so invoking `/<slug>` still records a run
+(`knack run` then `knack mark`), best-effort. Default scope is global
+(`~/.claude/skills/…`); override with `--local` or `defaults.link_scope` in
+`~/.knack/config.yaml`.
+
+Linked copies are PINNED: knack never auto-pulls a newer version (important
+for teams — a teammate's publish won't silently change what runs). When a
+newer version exists, `knack run` flags it (version + author); the user
+adopts it explicitly with `knack link <slug>` or `knack link --all`. If
+linking created a new top-level skills directory, the agent may need a
+restart to see the command. See `knack docs linking`.
+
+## Pull the playbook for the task at hand
+
+The full operating guide lives in `knack info` (~19k tokens). Don't pull all
+of it. Pull the section(s) for what you're doing — each is ~1-3k tokens:
+
+    knack info interview authoring publishing   # teach/author a new skill
+    knack info running                          # run a published skill
+    knack info sharing                          # marketplace, forking, teams
+    knack info setup                            # install / sandboxes
+    knack info iterating                        # revise, re-publish, run stats
+    knack info --list                           # the full section index
+    knack info                                  # everything (e.g. after compaction)
+
+Treat the section you pull as the source of truth for that task. When the user
+wants to teach you a repeatable workflow, start with
+`knack info interview authoring publishing`.
 
 ## Sign in (once per machine)
 
@@ -45,8 +76,8 @@ runtime-specific gotchas. Treat it as the source of truth.
 
 In a sandbox where keyring writes don't persist (Codex sandbox,
 ephemeral cloud VMs), use a Personal Access Token instead — set
-`KNACK_AUTH_TOKEN=knack_pat_...` in your shell. `knack info` covers
-the sandbox flow in full.
+`KNACK_AUTH_TOKEN=knack_pat_...` in your shell. `knack info setup`
+covers the sandbox flow in full.
 
 ## Workspace
 

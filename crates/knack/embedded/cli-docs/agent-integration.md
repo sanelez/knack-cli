@@ -383,6 +383,8 @@ the agent.
 If `knack` is installed, every doc surface lives in the binary:
 
     knack info                  # full agent playbook (agent.txt)
+    knack info --list           # the playbook's section index
+    knack info <slug> [<slug>…] # just those sections (e.g. `knack info running`)
     knack docs                  # all topics
     knack docs commands         # one topic
     knack help --json           # machine-readable command tree
@@ -394,7 +396,10 @@ If `knack` is not installed, the install script lives at
 `knack info` is the canonical agent playbook (interview phases, authoring,
 publishing, iteration). It fetches the live copy from getknack.ai and falls
 back to the version bundled into the binary if the network is unavailable.
-Re-read it whenever the user's workflow involves skill authoring.
+It is ~19k tokens, so prefer pulling the section you need —
+`knack info --list` shows them, `knack info <slug>...` prints one or more
+(e.g. `knack info interview authoring`). Bare `knack info` is best for a
+full reload after compaction.
 
 ## Registering knack with the agent's context
 

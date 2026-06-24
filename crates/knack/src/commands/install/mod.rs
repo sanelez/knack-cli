@@ -50,6 +50,7 @@
 pub mod block;
 pub mod detect;
 pub mod installed;
+pub mod linked;
 pub mod shim;
 pub mod targets;
 
