@@ -2,7 +2,7 @@
 //!
 //! Thin wrapper around the platform install one-liner:
 //!
-//!   * macOS / Linux: `curl -fsSL https://getknack.ai/install.sh | sh`
+//!   * macOS / Linux: `curl -fsSL https://getknack.ai/install | sh`
 //!     POSIX `unlink + rename` lets the running binary be replaced
 //!     safely while it executes (the current process keeps its inode),
 //!     so `--run` defaults to true on these platforms.
@@ -24,7 +24,7 @@ use serde_json::json;
 use crate::errors::{CliError, CliResult};
 use crate::output::{emit_err, emit_ok, OutputMode};
 
-const INSTALL_SH_CMD: &str = "curl -fsSL https://getknack.ai/install.sh | sh";
+const INSTALL_SH_CMD: &str = "curl -fsSL https://getknack.ai/install | sh";
 const INSTALL_PS1_CMD: &str = "iwr https://getknack.ai/install.ps1 | iex";
 
 #[derive(Debug, Args)]
@@ -136,7 +136,10 @@ mod tests {
         if cfg!(target_os = "windows") {
             assert!(cmd.contains("install.ps1"));
         } else {
-            assert!(cmd.contains("install.sh"));
+            // Canonical extensionless path — NOT the old /install.sh that
+            // 404'd to the SPA and piped HTML into `sh`.
+            assert!(cmd.contains("getknack.ai/install"));
+            assert!(!cmd.contains("install.sh"));
         }
     }
 

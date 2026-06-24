@@ -391,7 +391,7 @@ If `knack` is installed, every doc surface lives in the binary:
     knack introspect            # every subcommand + flag as JSON
 
 If `knack` is not installed, the install script lives at
-`https://getknack.ai/install.sh` (or `install.ps1` on Windows).
+`https://getknack.ai/install` (or `install.ps1` on Windows).
 
 `knack info` is the canonical agent playbook (interview phases, authoring,
 publishing, iteration). It fetches the live copy from getknack.ai and falls

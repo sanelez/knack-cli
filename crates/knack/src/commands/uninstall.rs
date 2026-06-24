@@ -26,7 +26,7 @@ use crate::errors::CliResult;
 use crate::output::{emit_ok, OutputMode};
 
 const UNINSTALL_PS1_URL: &str = "https://getknack.ai/uninstall.ps1";
-const UNINSTALL_SH_URL: &str = "https://getknack.ai/uninstall.sh";
+const UNINSTALL_SH_URL: &str = "https://getknack.ai/uninstall";
 
 #[derive(Debug, Args)]
 pub struct UninstallArgs {
@@ -272,7 +272,7 @@ fn platform_script_oneliner() -> &'static str {
     if cfg!(target_os = "windows") {
         "iwr https://getknack.ai/uninstall.ps1 | iex"
     } else {
-        "curl -fsSL https://getknack.ai/uninstall.sh | sh"
+        "curl -fsSL https://getknack.ai/uninstall | sh"
     }
 }
 
@@ -305,7 +305,10 @@ mod tests {
             assert!(cmd.contains("uninstall.ps1"));
             assert!(cmd.contains("iwr"));
         } else {
-            assert!(cmd.contains("uninstall.sh"));
+            // Canonical extensionless path — NOT the old /uninstall.sh that
+            // 404'd to the SPA shell.
+            assert!(cmd.contains("getknack.ai/uninstall"));
+            assert!(!cmd.contains("uninstall.sh"));
             assert!(cmd.contains("curl"));
         }
     }

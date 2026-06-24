@@ -1644,8 +1644,8 @@ It does NOT remove the binary itself. The running `knack` process
 cannot reliably delete its own executable on Windows (file lock), so
 the binary removal happens out-of-band via the platform script:
 
-    Windows:      iwr https://cli.getknack.ai/uninstall.ps1 | iex
-    macOS/Linux:  curl -fsSL https://cli.getknack.ai/uninstall.sh | sh
+    Windows:      iwr https://getknack.ai/uninstall.ps1 | iex
+    macOS/Linux:  curl -fsSL https://getknack.ai/uninstall | sh
 
 To get the right command for the current platform without thinking,
 agents can run:
