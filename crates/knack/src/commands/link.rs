@@ -66,6 +66,13 @@ pub struct LinkArgs {
     #[arg(long)]
     pub print: bool,
 
+    /// Overwrite an existing skill of the same name even if it was NOT
+    /// authored by knack. Without this, linking skips any agent dir where a
+    /// non-knack `<slug>/SKILL.md` already lives, so a hand-authored skill is
+    /// never clobbered.
+    #[arg(long)]
+    pub force: bool,
+
     /// List skills currently linked on this machine and exit.
     #[arg(long, conflicts_with_all = ["global", "local", "agent", "print"])]
     pub list: bool,
@@ -145,7 +152,7 @@ pub async fn run_link(args: LinkArgs, client: ApiClient, mode: OutputMode) -> Cl
         .flatten()
         .unwrap_or_default();
 
-    let write = write_skill_to_targets(&skill, &fm, scope, &agent_targets, args.print);
+    let write = write_skill_to_targets(&skill, &fm, scope, &agent_targets, args.print, args.force);
 
     // Record in the registry (best-effort; bookkeeping only) and warn if a
     // same-name link in the other scope will shadow / be shadowed by this.
@@ -188,6 +195,7 @@ fn write_skill_to_targets(
     scope: Scope,
     targets: &[&'static AgentTarget],
     print: bool,
+    force: bool,
 ) -> WriteResult {
     let mut outcomes: Vec<AgentOutcome> = Vec::new();
     let mut created_top_level_dir = false;
@@ -207,6 +215,17 @@ fn write_skill_to_targets(
         match t.shim_style {
             ShimStyle::NativeSkill => {
                 let dest = root.join(&skill.slug);
+                // Never clobber a skill the user authored themselves. The
+                // write counterpart to sigil-protected removal: if a non-knack
+                // SKILL.md already occupies this slug, skip unless --force.
+                if !force && shim::foreign_skill_present(&root, &skill.slug) {
+                    outcomes.push(AgentOutcome::skipped(
+                        t,
+                        Some(dest),
+                        "a non-knack skill of this name already exists here (pass --force to overwrite)",
+                    ));
+                    continue;
+                }
                 if print {
                     outcomes.push(AgentOutcome::dry_run(t, dest));
                     continue;
@@ -513,7 +532,7 @@ async fn relink_to_latest(client: &ApiClient, slug: &str) -> bool {
         if targets.is_empty() {
             continue;
         }
-        let write = write_skill_to_targets(&skill, &fm, entry.scope, &targets, false);
+        let write = write_skill_to_targets(&skill, &fm, entry.scope, &targets, false, false);
         if !write.written_agents.is_empty() {
             let _ = linked::add(&skill.slug, &skill.version, entry.scope, write.written_agents);
             any = true;
@@ -525,6 +544,11 @@ async fn relink_to_latest(client: &ApiClient, slug: &str) -> bool {
 // ─── unlink ────────────────────────────────────────────────────────────────
 
 pub async fn run_unlink(args: UnlinkArgs, client: ApiClient, mode: OutputMode) -> CliResult<()> {
+    if !is_safe_slug(&args.slug) {
+        let err = invalid_slug_err(&args.slug);
+        emit_err(mode, &err);
+        return Err(err);
+    }
     let scope = resolve_scope(args.global, args.local, client.config.link_scope);
 
     // For removal we sweep every known target at this scope (not just the
@@ -615,6 +639,34 @@ fn unknown_agent_err(name: &str) -> CliError {
     }
 }
 
+/// Reject slugs that aren't a safe single path component before we join them
+/// under an agent skill directory (`<root>/<slug>/…`). Cloud slugs are
+/// server-validated (`^[a-z0-9][a-z0-9-]*$`); this is defense-in-depth that
+/// matters for self-host (repo-derived) slugs and raw `unlink <slug>` input —
+/// a `..` or `/` here would otherwise escape the skills root.
+fn is_safe_slug(slug: &str) -> bool {
+    match slug.chars().next() {
+        Some(c) if c.is_ascii_alphanumeric() => {}
+        _ => return false,
+    }
+    slug.len() <= 128
+        && slug
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+}
+
+fn invalid_slug_err(slug: &str) -> CliError {
+    CliError::User {
+        code: "INVALID_SLUG".into(),
+        message: format!("unsafe skill slug: {slug:?}"),
+        hint: Some(
+            "slugs must start alphanumeric and contain only letters, digits, '-' or '_' \
+             (no slashes or dots)"
+                .into(),
+        ),
+    }
+}
+
 /// Agents to link into: one named target with `--agent`, else every agent
 /// recorded as installed (deduped, registry-resolved). An empty installed
 /// set is an error pointing at `knack install`.
@@ -679,6 +731,9 @@ async fn materialize(client: &ApiClient, spec: &str) -> CliResult<Materialized> 
         Ok(None) => return Err(CliError::NotFound(format!("skill `{slug}` not found"))),
         Err(e) => return Err(e),
     };
+    if !is_safe_slug(&skill.slug) {
+        return Err(invalid_slug_err(&skill.slug));
+    }
     let semver = match version_filter {
         Some(v) => v.to_string(),
         None => skill
@@ -755,6 +810,9 @@ async fn materialize_github(spec: &str, local_path: &std::path::Path) -> CliResu
         Ok(p) => p,
         Err(e) => return Err(CliError::NotFound(format!("github pull: {e}"))),
     };
+    if !is_safe_slug(&pkg.slug) {
+        return Err(invalid_slug_err(&pkg.slug));
+    }
     let files: Vec<(String, Vec<u8>)> = pkg
         .files
         .iter()
@@ -934,6 +992,31 @@ fn emit_link_report(
             "a new agent skills directory was created; restart the agent (e.g. Claude Code) \
              so it watches the new directory and the slash command appears.",
         );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn safe_slug_accepts_real_slugs_rejects_traversal() {
+        for ok in ["demo", "monthly-close", "a", "skill_2", "ABC-123"] {
+            assert!(is_safe_slug(ok), "{ok} should be accepted");
+        }
+        for bad in [
+            "",
+            "-leading-hyphen",
+            "..",
+            ".",
+            "../escape",
+            "a/b",
+            "a\\b",
+            "with space",
+            "dot.name",
+        ] {
+            assert!(!is_safe_slug(bad), "{bad:?} should be rejected");
+        }
     }
 }
 

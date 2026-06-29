@@ -327,6 +327,15 @@ pub fn remove_linked_skill(root: &Path, slug: &str) -> io::Result<bool> {
     Ok(true)
 }
 
+/// True when `<root>/<slug>/SKILL.md` exists but is NOT knack-managed — i.e.
+/// a user-authored skill already occupies this slug. Callers use this to
+/// refuse overwriting someone's own skill when linking; it's the write-side
+/// counterpart to the sigil-protected removal above.
+pub fn foreign_skill_present(root: &Path, slug: &str) -> bool {
+    let file = root.join(slug).join("SKILL.md");
+    file.is_file() && !file_carries_sigil(&file)
+}
+
 /// Insert (or replace in place) a sentinel-bracketed per-skill block
 /// inside an agent's context file. Idempotent. Returns `true` when the
 /// file changed.
@@ -785,6 +794,29 @@ mod tests {
         // Removal takes the whole folder (sigil-protected).
         assert!(remove_linked_skill(root, "demo").unwrap());
         assert!(!root.join("demo").exists());
+    }
+
+    #[test]
+    fn foreign_skill_present_guards_user_authored_slug() {
+        let dir = TempDir::new().unwrap();
+        let root = dir.path();
+        // Nothing there yet → not foreign.
+        assert!(!foreign_skill_present(root, "demo"));
+        // A user-authored skill (no sigil) → foreign, must not be overwritten.
+        fs::create_dir_all(root.join("demo")).unwrap();
+        fs::write(
+            root.join("demo").join("SKILL.md"),
+            "---\nname: demo\n---\n\nMy own skill.\n",
+        )
+        .unwrap();
+        assert!(foreign_skill_present(root, "demo"));
+        // A knack-linked skill (sigil in body) → ours, safe to overwrite.
+        fs::write(
+            root.join("demo").join("SKILL.md"),
+            render_linked_skill("demo", "claude", LINKED_SRC),
+        )
+        .unwrap();
+        assert!(!foreign_skill_present(root, "demo"));
     }
 
     #[test]

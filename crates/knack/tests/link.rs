@@ -107,6 +107,7 @@ async fn link_writes_wrapped_skill_then_unlink_removes_it() {
             local: false,
             agent: None,
             print: false,
+            force: false,
             list: false,
             check: false,
             all: false,
